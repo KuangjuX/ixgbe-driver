@@ -2,4 +2,4 @@
 
 ## Introduction
 
-Intel 82599+ 10Gb NIC Driver written in Rust, a fork of [theseus-os](https://github1s.com/theseus-os/Theseus) ixgbe crate.
+Intel 82599+ 10Gb NIC Driver written in Rust, a fork of [ixy.rs](https://github.com/ixy-languages/ixy.rs).
