@@ -8,3 +8,7 @@ mod constants;
 mod hal;
 mod ixgbe;
 mod memory;
+
+extern crate alloc;
+#[macro_use]
+extern crate log;
