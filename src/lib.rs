@@ -5,4 +5,6 @@
 #![deny(missing_docs)]
 
 mod constants;
+mod hal;
 mod ixgbe;
+mod memory;
