@@ -8,7 +8,7 @@ use crate::memory::PhysAddr;
 ///
 /// Implementations of this trait must follow the "implementation safety" requirements documented
 /// for each method. Callers must follow the safety requirements documented for the unsafe methods.
-pub unsafe trait Hal {
+pub unsafe trait IxgbeHal {
     /// Allocates and zeroes the given number of contiguous physical pages of DMA memory for VirtIO
     /// use.
     ///
