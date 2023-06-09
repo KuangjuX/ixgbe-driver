@@ -50,6 +50,8 @@ pub unsafe trait IxgbeHal {
     /// in some way (and panic if it is invalid) but is not guaranteed to.
     unsafe fn mmio_phys_to_virt(paddr: PhysAddr, size: usize) -> NonNull<u8>;
 
+    unsafe fn mmio_virt_to_phys(vaddr: NonNull<u8>, size: usize) -> PhysAddr;
+
     /// Shares the given memory range with the device, and returns the physical address that the
     /// device can use to access it.
     ///
@@ -71,6 +73,11 @@ pub unsafe trait IxgbeHal {
     /// for the duration of this method call. The `paddr` must be the value previously returned by
     /// the corresponding `share` call.
     unsafe fn unshare(paddr: PhysAddr, buffer: NonNull<[u8]>, direction: BufferDirection);
+
+    /// Returns the frequency of the TSC in Hz.
+    fn get_tsc_frequency() -> u64;
+
+    fn wait_ms(microseconds: u32) -> Result<(), &'static str>;
 }
 
 #[allow(dead_code)]

@@ -7,6 +7,7 @@
 
 mod constants;
 mod hal;
+mod interrupts;
 mod ixgbe;
 mod memory;
 
@@ -119,6 +120,7 @@ pub trait NicDevice<H: IxgbeHal> {
 }
 
 /// Holds network card stats about sent and received packets.
+#[allow(missing_docs)]
 #[derive(Default, Copy, Clone)]
 pub struct DeviceStats {
     pub rx_pkts: u64,

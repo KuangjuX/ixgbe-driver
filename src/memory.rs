@@ -1,17 +1,28 @@
+use core::fmt::Debug;
+use core::ops::{Deref, DerefMut};
+use core::ptr::NonNull;
 use core::{cell::RefCell, marker::PhantomData};
 
 use crate::{hal::IxgbeHal, ixgbe::IxgbeResult};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
+use alloc::{fmt, slice};
 
 pub type PhysAddr = usize;
 pub type VirtAddr = usize;
+
+const HUGE_PAGE_BITS: u32 = 21;
+const HUGE_PAGE_SIZE: usize = 1 << HUGE_PAGE_BITS;
+
+// this differs from upstream ixy as our packet metadata is stored outside of the actual packet data
+// which results in a different alignment requirement
+pub const PACKET_HEADROOM: usize = 32;
 
 pub struct Mempool<H: IxgbeHal> {
     base_addr: *mut u8,
     num_entries: usize,
     entry_size: usize,
-    phys_addresses: Vec<usize>,
+    phys_addr: Vec<usize>,
     pub(crate) free_stack: RefCell<Vec<usize>>,
     _marker: PhantomData<H>,
 }
@@ -23,11 +34,69 @@ impl<H: IxgbeHal> Mempool<H> {
     ///
     /// Panics if `size` is not a divisor of the page size.
     pub fn allocate(entries: usize, size: usize) -> IxgbeResult<Rc<Mempool<H>>> {
-        todo!()
+        let entry_size = match size {
+            0 => 2048,
+            x => x,
+        };
+
+        if HUGE_PAGE_SIZE % entry_size != 0 {
+            error!("entry size must be a divisor of the page size");
+            return Err(crate::ixgbe::IxgbeError::PageNotAligned);
+        }
+
+        let dma = Dma::<u8, H>::allocate(entries * entry_size, false)?;
+        let mut phys_addr = Vec::with_capacity(entries);
+
+        for i in 0..entries {
+            phys_addr.push(unsafe {
+                H::mmio_virt_to_phys(
+                    NonNull::new(dma.virt.add(i * entry_size)).unwrap(),
+                    entry_size,
+                )
+            })
+        }
+
+        let pool = Mempool::<H> {
+            base_addr: dma.virt,
+            num_entries: entries,
+            entry_size,
+            phys_addr,
+            free_stack: RefCell::new(Vec::with_capacity(entries)),
+            _marker: PhantomData,
+        };
+
+        let pool = Rc::new(pool);
+        pool.free_stack.borrow_mut().extend(0..entries);
+
+        Ok(pool)
     }
 
-    pub(crate) fn alloc_buf(&self) -> Option<VirtAddr> {
-        todo!()
+    /// Returns the position of a free buffer in the memory pool, or [`None`] if the pool is empty.
+    pub(crate) fn alloc_buf(&self) -> Option<usize> {
+        self.free_stack.borrow_mut().pop()
+    }
+
+    /// Marks a buffer in the memory pool as free.
+    pub(crate) fn free_buf(&self, id: usize) {
+        assert!(id < self.num_entries, "buffer outside of memory pool");
+
+        self.free_stack.borrow_mut().push(id);
+    }
+
+    pub fn entry_size(&self) -> usize {
+        self.entry_size
+    }
+
+    /// Returns the virtual address of a buffer from the memory pool.
+    pub(crate) fn get_virt_addr(&self, id: usize) -> *mut u8 {
+        assert!(id < self.num_entries, "buffer outside of memory pool");
+
+        unsafe { self.base_addr.add(id * self.entry_size) }
+    }
+
+    /// Returns the physical address of a buffer from the memory pool.
+    pub fn get_phys_addr(&self, id: usize) -> usize {
+        self.phys_addr[id]
     }
 }
 
@@ -38,7 +107,7 @@ pub struct Dma<T, H: IxgbeHal> {
 }
 
 impl<T, H: IxgbeHal> Dma<T, H> {
-    pub fn allocate(size: usize, require_contiguous: bool) -> IxgbeResult<Dma<T, H>> {
+    pub fn allocate(_size: usize, _require_contiguous: bool) -> IxgbeResult<Dma<T, H>> {
         todo!()
     }
 }
@@ -49,7 +118,89 @@ pub struct Packet<H: IxgbeHal> {
     pub(crate) len: usize,
     pub(crate) pool: Rc<Mempool<H>>,
     pub(crate) pool_entry: usize,
-    _marker: PhantomData<H>,
+    pub(crate) _marker: PhantomData<H>,
+}
+
+impl<H: IxgbeHal> Clone for Packet<H> {
+    fn clone(&self) -> Self {
+        let mut p = alloc_pkt(&self.pool, self.len).expect("no buffer available");
+        p.clone_from_slice(self);
+
+        p
+    }
+}
+
+impl<H: IxgbeHal> Deref for Packet<H> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        unsafe { slice::from_raw_parts(self.addr_virt, self.len) }
+    }
+}
+
+impl<H: IxgbeHal> DerefMut for Packet<H> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        unsafe { slice::from_raw_parts_mut(self.addr_virt, self.len) }
+    }
+}
+
+impl<H: IxgbeHal> Debug for Packet<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
+impl<H: IxgbeHal> Drop for Packet<H> {
+    fn drop(&mut self) {
+        self.pool.free_buf(self.pool_entry);
+    }
+}
+
+impl<H: IxgbeHal> Packet<H> {
+    /// Returns a new `Packet`.
+    pub(crate) unsafe fn new(
+        addr_virt: *mut u8,
+        addr_phys: usize,
+        len: usize,
+        pool: Rc<Mempool<H>>,
+        pool_entry: usize,
+    ) -> Packet<H> {
+        Packet::<H> {
+            addr_virt,
+            addr_phys,
+            len,
+            pool,
+            pool_entry,
+            _marker: PhantomData,
+        }
+    }
+    /// Returns the virtual address of the packet.
+    pub fn get_virt_addr(&self) -> *mut u8 {
+        self.addr_virt
+    }
+
+    /// Returns the physical address of the packet.
+    pub fn get_phys_addr(&self) -> usize {
+        self.addr_phys
+    }
+}
+
+/// Returns a free packet from the `pool`, or [`None`] if the requested packet size exceeds the
+/// maximum size for that pool or if the pool is empty.
+pub fn alloc_pkt<H: IxgbeHal>(pool: &Rc<Mempool<H>>, size: usize) -> Option<Packet<H>> {
+    if size > pool.entry_size - PACKET_HEADROOM {
+        return None;
+    }
+
+    pool.alloc_buf().map(|id| unsafe {
+        Packet::new(
+            pool.get_virt_addr(id).add(PACKET_HEADROOM),
+            pool.get_phys_addr(id) + PACKET_HEADROOM,
+            size,
+            Rc::clone(pool),
+            id,
+        )
+    })
 }
 
 /// Initializes `len` fields of type `T` at `addr` with `value`.

@@ -8,3 +8,7 @@ authors = ["KuangjuX <kuangjux@outlook.com>"]
 
 [dependencies]
 log = "0.4"
+
+[features]
+default = []
+irq = []
