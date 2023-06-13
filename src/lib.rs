@@ -18,6 +18,16 @@ extern crate log;
 use crate::memory::Packet;
 use alloc::collections::VecDeque;
 use hal::IxgbeHal;
+use ixgbe::{IxgbeDevice, IxgbeResult};
+
+pub use hal::IxgbeHal;
+pub use ixgbe::IxgbeDevice;
+
+/// Vendor ID for Intel.
+pub const INTEL_VEND: u16 = 0x8086;
+
+/// Device ID for the 82599ES, used to identify the device from the PCI space.
+pub const INTEL_82599: u16 = 0x10FB;
 
 /// Used for implementing an ixy device driver like ixgbe or virtio.
 pub trait NicDevice<H: IxgbeHal> {
@@ -128,3 +138,6 @@ pub struct DeviceStats {
     pub rx_bytes: u64,
     pub tx_bytes: u64,
 }
+
+// /// Initializes the network card with the given `pci_addr` and returns a `NicDevice`.
+// pub fn init_ixgbe<H: IxgbeHal>() -> IxgbeResult<IxgbeDevice<H>> {}
