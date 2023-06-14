@@ -17,11 +17,10 @@ extern crate log;
 
 use crate::memory::Packet;
 use alloc::collections::VecDeque;
-use hal::IxgbeHal;
-use ixgbe::{IxgbeDevice, IxgbeResult};
 
-pub use hal::IxgbeHal;
-pub use ixgbe::IxgbeDevice;
+pub use hal::{BufferDirection, IxgbeHal};
+pub use ixgbe::{IxgbeDevice, IxgbeResult};
+pub use memory::PhysAddr;
 
 /// Vendor ID for Intel.
 pub const INTEL_VEND: u16 = 0x8086;

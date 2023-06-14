@@ -4,11 +4,13 @@ use core::ptr::NonNull;
 use core::{cell::RefCell, marker::PhantomData};
 
 use crate::{hal::IxgbeHal, ixgbe::IxgbeResult};
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{fmt, slice};
 
+/// Phyaical Address
 pub type PhysAddr = usize;
+/// Virtual Address
 pub type VirtAddr = usize;
 
 const HUGE_PAGE_BITS: u32 = 21;
@@ -33,7 +35,7 @@ impl<H: IxgbeHal> Mempool<H> {
     /// # Panics
     ///
     /// Panics if `size` is not a divisor of the page size.
-    pub fn allocate(entries: usize, size: usize) -> IxgbeResult<Rc<Mempool<H>>> {
+    pub fn allocate(entries: usize, size: usize) -> IxgbeResult<Arc<Mempool<H>>> {
         let entry_size = match size {
             0 => 2048,
             x => x,
@@ -65,7 +67,7 @@ impl<H: IxgbeHal> Mempool<H> {
             _marker: PhantomData,
         };
 
-        let pool = Rc::new(pool);
+        let pool = Arc::new(pool);
         pool.free_stack.borrow_mut().extend(0..entries);
 
         Ok(pool)
@@ -116,7 +118,7 @@ pub struct Packet<H: IxgbeHal> {
     pub(crate) addr_virt: *mut u8,
     pub(crate) addr_phys: usize,
     pub(crate) len: usize,
-    pub(crate) pool: Rc<Mempool<H>>,
+    pub(crate) pool: Arc<Mempool<H>>,
     pub(crate) pool_entry: usize,
     pub(crate) _marker: PhantomData<H>,
 }
@@ -162,7 +164,7 @@ impl<H: IxgbeHal> Packet<H> {
         addr_virt: *mut u8,
         addr_phys: usize,
         len: usize,
-        pool: Rc<Mempool<H>>,
+        pool: Arc<Mempool<H>>,
         pool_entry: usize,
     ) -> Packet<H> {
         Packet::<H> {
@@ -187,7 +189,7 @@ impl<H: IxgbeHal> Packet<H> {
 
 /// Returns a free packet from the `pool`, or [`None`] if the requested packet size exceeds the
 /// maximum size for that pool or if the pool is empty.
-pub fn alloc_pkt<H: IxgbeHal>(pool: &Rc<Mempool<H>>, size: usize) -> Option<Packet<H>> {
+pub fn alloc_pkt<H: IxgbeHal>(pool: &Arc<Mempool<H>>, size: usize) -> Option<Packet<H>> {
     if size > pool.entry_size - PACKET_HEADROOM {
         return None;
     }
@@ -197,7 +199,7 @@ pub fn alloc_pkt<H: IxgbeHal>(pool: &Rc<Mempool<H>>, size: usize) -> Option<Pack
             pool.get_virt_addr(id).add(PACKET_HEADROOM),
             pool.get_phys_addr(id) + PACKET_HEADROOM,
             size,
-            Rc::clone(pool),
+            Arc::clone(pool),
             id,
         )
     })

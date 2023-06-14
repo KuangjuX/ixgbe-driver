@@ -2,19 +2,24 @@ use crate::interrupts::Interrupts;
 use crate::memory::{memset, Dma, Mempool, Packet};
 use crate::NicDevice;
 use crate::{constants::*, hal::IxgbeHal};
-use alloc::{collections::VecDeque, rc::Rc, vec::Vec};
+use alloc::sync::Arc;
+use alloc::{collections::VecDeque, vec::Vec};
 use core::marker::PhantomData;
+use core::time::Duration;
 use core::{mem, ptr};
 
 #[derive(Debug)]
+/// Error type for Ixgbe functions.
 pub enum IxgbeError {
     QueueNotAligned,
     NoMemory,
     PageNotAligned,
 }
+
+/// Result type for Ixgbe functions.
 pub type IxgbeResult<T = ()> = Result<T, IxgbeError>;
 
-const DRIVER_NAME: &str = "ixy-ixgbe";
+const DRIVER_NAME: &str = "ixgbe";
 
 const MAX_QUEUES: u16 = 64;
 
@@ -29,6 +34,7 @@ fn wrap_ring(index: usize, ring_size: usize) -> usize {
     (index + 1) & (ring_size - 1)
 }
 
+/// Ixgbe device.
 pub struct IxgbeDevice<H: IxgbeHal> {
     // pci_addr: String,
     addr: *mut u8,
@@ -44,7 +50,7 @@ pub struct IxgbeDevice<H: IxgbeHal> {
 struct IxgbeRxQueue<H: IxgbeHal> {
     descriptors: *mut ixgbe_adv_rx_desc,
     num_descriptors: usize,
-    pool: Rc<Mempool<H>>,
+    pool: Arc<Mempool<H>>,
     bufs_in_use: Vec<usize>,
     rx_index: usize,
 }
@@ -52,7 +58,7 @@ struct IxgbeRxQueue<H: IxgbeHal> {
 struct IxgbeTxQueue<H: IxgbeHal> {
     descriptors: *mut ixgbe_adv_tx_desc,
     num_descriptors: usize,
-    pool: Option<Rc<Mempool<H>>>,
+    pool: Option<Arc<Mempool<H>>>,
     bufs_in_use: VecDeque<usize>,
     clean_index: usize,
     tx_index: usize,
@@ -60,7 +66,7 @@ struct IxgbeTxQueue<H: IxgbeHal> {
 
 impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
     fn get_driver_name(&self) -> &str {
-        todo!()
+        DRIVER_NAME
     }
 
     /// Returns the link speed of this device.
@@ -270,7 +276,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
 
         while let Some(packet) = buffer.pop_front() {
             assert!(
-                Rc::ptr_eq(queue.pool.as_ref().unwrap(), &packet.pool),
+                Arc::ptr_eq(queue.pool.as_ref().unwrap(), &packet.pool),
                 "distinct memory pools for a single tx queue are not supported yet"
             );
 
@@ -322,6 +328,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
 }
 
 impl<H: IxgbeHal> IxgbeDevice<H> {
+    /// Initializes the device at `base` with `len` bytes of memory and `num_rx_queues` receive
     pub fn init(
         base: usize,
         len: usize,
@@ -349,6 +356,16 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
         dev.reset_and_init()?;
         Ok(dev)
     }
+
+    /// Returns the number of receive queues.
+    pub fn num_rx_queues(&self) -> u16 {
+        self.num_rx_queues
+    }
+
+    /// Returns the number of transmit queues.
+    pub fn num_tx_queues(&self) -> u16 {
+        self.num_tx_queues
+    }
 }
 
 // Private methods implementation
@@ -364,7 +381,8 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
         self.wait_clear_reg32(IXGBE_CTRL, IXGBE_CTRL_RST_MASK);
         // TODO: sleep 10 millis.
         // thread::sleep(Duration::from_millis(10));
-        let _ = H::wait_ms(10);
+        // let _ = H::wait_ms(10);
+        let _ = H::wait_until(Duration::from_millis(10));
 
         // section 4.6.3.1 - disable interrupts again after reset
         self.disable_interrupts();
@@ -868,8 +886,8 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
             && unsafe { core::arch::x86_64::_rdtsc() / H::get_tsc_frequency() - time } < 10
         {
             // thread::sleep(Duration::from_millis(100));
-            // core::hint::spin_loop();
-            let _ = H::wait_ms(100);
+            core::hint::spin_loop();
+            // let _ = H::wait_ms(100);
             speed = self.get_link_speed();
         }
         info!("link speed is {} Mbit/s", self.get_link_speed());
@@ -928,7 +946,8 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
                 break;
             }
             // `thread::sleep(Duration::from_millis(100));`
-            let _ = H::wait_ms(100);
+            // let _ = H::wait_ms(100);
+            let _ = H::wait_until(Duration::from_millis(100));
         }
     }
 
@@ -940,7 +959,8 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
                 break;
             }
             // `thread::sleep(Duration::from_millis(100));`
-            let _ = H::wait_ms(100);
+            // let _ = H::wait_ms(100);
+            let _ = H::wait_until(Duration::from_millis(100));
         }
     }
 
@@ -1007,3 +1027,6 @@ fn clean_tx_queue<H: IxgbeHal>(queue: &mut IxgbeTxQueue<H>) -> usize {
 
     clean_index
 }
+
+unsafe impl<H: IxgbeHal> Sync for IxgbeDevice<H> {}
+unsafe impl<H: IxgbeHal> Send for IxgbeDevice<H> {}

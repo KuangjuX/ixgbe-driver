@@ -8,6 +8,7 @@ authors = ["KuangjuX <kuangjux@outlook.com>"]
 
 [dependencies]
 log = "0.4"
+spinlock = {path = "../spinlock"}
 
 [features]
 default = []
