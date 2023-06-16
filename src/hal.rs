@@ -52,6 +52,10 @@ pub unsafe trait IxgbeHal {
 
     /// Converts a virtual address used by the driver to access MMIO to a physical address which the
     /// device can use.
+    ///
+    /// # Safety
+    ///
+    ///
     unsafe fn mmio_virt_to_phys(vaddr: NonNull<u8>, size: usize) -> PhysAddr;
 
     // /// Shares the given memory range with the device, and returns the physical address that the

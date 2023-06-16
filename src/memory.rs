@@ -109,8 +109,18 @@ pub struct Dma<T, H: IxgbeHal> {
 }
 
 impl<T, H: IxgbeHal> Dma<T, H> {
-    pub fn allocate(_size: usize, _require_contiguous: bool) -> IxgbeResult<Dma<T, H>> {
-        todo!()
+    pub fn allocate(size: usize, _require_contiguous: bool) -> IxgbeResult<Dma<T, H>> {
+        let size = if size % HUGE_PAGE_SIZE != 0 {
+            ((size >> HUGE_PAGE_BITS) + 1) << HUGE_PAGE_BITS
+        } else {
+            size
+        };
+        let (pa, va) = H::dma_alloc(size / 0x1000, crate::BufferDirection::Both);
+        Ok(Dma::<T, H> {
+            virt: va.as_ptr() as *mut T,
+            phys: pa,
+            _marker: PhantomData,
+        })
     }
 }
 

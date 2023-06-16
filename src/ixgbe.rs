@@ -381,7 +381,6 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
         self.wait_clear_reg32(IXGBE_CTRL, IXGBE_CTRL_RST_MASK);
         // TODO: sleep 10 millis.
         // thread::sleep(Duration::from_millis(10));
-        // let _ = H::wait_ms(10);
         let _ = H::wait_until(Duration::from_millis(10));
 
         // section 4.6.3.1 - disable interrupts again after reset
