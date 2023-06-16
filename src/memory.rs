@@ -116,6 +116,12 @@ impl<T, H: IxgbeHal> Dma<T, H> {
             size
         };
         let (pa, va) = H::dma_alloc(size / 0x1000, crate::BufferDirection::Both);
+        info!(
+            "allocated DMA memory @pa: {:#x}, va: {:#x}, size: {:#x}",
+            pa,
+            va.as_ptr() as usize,
+            size
+        );
         Ok(Dma::<T, H> {
             virt: va.as_ptr() as *mut T,
             phys: pa,
