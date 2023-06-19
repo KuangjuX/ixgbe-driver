@@ -11,9 +11,16 @@ use core::{mem, ptr};
 #[derive(Debug)]
 /// Error type for Ixgbe functions.
 pub enum IxgbeError {
+    /// Queue size is not aligned.
     QueueNotAligned,
+    /// No memory
     NoMemory,
+    /// Allocated page not aligned.
     PageNotAligned,
+    /// The device is not ready
+    NotReady,
+    /// Invalid `queue_id`
+    InvalidQueue,
 }
 
 /// Result type for Ixgbe functions.
@@ -62,6 +69,12 @@ struct IxgbeTxQueue<H: IxgbeHal> {
     bufs_in_use: VecDeque<usize>,
     clean_index: usize,
     tx_index: usize,
+}
+
+/// A buffer used for receiving
+pub struct RxBuffer<H: IxgbeHal> {
+    packets: VecDeque<Packet<H>>,
+    packet_nums: usize,
 }
 
 impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
@@ -324,6 +337,94 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         );
 
         sent
+    }
+
+    /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
+    /// with type [`IxgbeError::NotReady`].
+    ///
+    /// It will try to pop a buffer that completed data reception in the NIC queue.
+    fn receive(&mut self, queue_id: u16, size: usize) -> IxgbeResult<RxBuffer<H>> {
+        // 0. initialize variables
+        let mut rx_index;
+        let mut last_rx_index;
+        let mut received_packets = 0;
+        let mut buffer: VecDeque<Packet<H>> = VecDeque::with_capacity(size);
+
+        // 1. Get received queue.
+        let queue = self
+            .rx_queues
+            .get_mut(queue_id as usize)
+            .ok_or(IxgbeError::InvalidQueue)?;
+
+        rx_index = queue.rx_index;
+        last_rx_index = queue.rx_index;
+
+        // 2. Continuously loop and pop packets from the queue,
+        // when no received packets in the queue end.
+        let mut index = 0;
+        loop {
+            let desc = unsafe { queue.descriptors.add(rx_index) as *mut ixgbe_adv_rx_desc };
+            let status =
+                unsafe { ptr::read_volatile(&mut (*desc).wb.upper.status_error as *mut u32) };
+
+            if (status & IXGBE_RXDADV_STAT_DD) == 0 {
+                break;
+            }
+
+            if (status & IXGBE_RXDADV_STAT_EOP) == 0 {
+                panic!("increase buffer size or decrease MTU")
+            }
+
+            let pool = &queue.pool;
+            // Get a free buffer from the mempool
+            if let Some(buf) = pool.alloc_buf() {
+                // replace currently used buffer with new buffer.
+                let buf = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
+
+                let p = Packet::<H> {
+                    addr_virt: pool.get_virt_addr(buf),
+                    addr_phys: pool.get_phys_addr(buf),
+                    len: unsafe {
+                        ptr::read_volatile(&(*desc).wb.upper.length as *const u16) as usize
+                    },
+                    pool: pool.clone(),
+                    pool_entry: buf,
+                    _marker: PhantomData,
+                };
+
+                buffer.push_back(p);
+
+                unsafe {
+                    ptr::write_volatile(
+                        &mut (*desc).read.pkt_addr as *mut u64,
+                        pool.get_phys_addr(queue.bufs_in_use[rx_index]) as u64,
+                    );
+                    ptr::write_volatile(&mut (*desc).read.hdr_addr as *mut u64, 0);
+                }
+
+                last_rx_index = rx_index;
+                rx_index = wrap_ring(rx_index, queue.num_descriptors);
+                received_packets = index + 1;
+                index += 1;
+            } else {
+                break;
+            }
+        }
+
+        if rx_index != last_rx_index {
+            self.set_reg32(IXGBE_VFRDT(u32::from(queue_id)), last_rx_index as u32);
+            self.rx_queues[queue_id as usize].rx_index = rx_index;
+        }
+
+        // 3. Return [`IxgbeError::NotReady`] when `received_packets` is 0.
+        if received_packets == 0 {
+            return Err(IxgbeError::NotReady);
+        }
+
+        Ok(RxBuffer {
+            packets: buffer,
+            packet_nums: received_packets,
+        })
     }
 }
 

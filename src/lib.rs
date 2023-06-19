@@ -19,7 +19,7 @@ use crate::memory::Packet;
 use alloc::collections::VecDeque;
 
 pub use hal::{BufferDirection, IxgbeHal};
-pub use ixgbe::{IxgbeDevice, IxgbeResult};
+pub use ixgbe::{IxgbeDevice, IxgbeError, IxgbeResult, RxBuffer};
 pub use memory::PhysAddr;
 
 /// Vendor ID for Intel.
@@ -126,6 +126,12 @@ pub trait NicDevice<H: IxgbeHal> {
             self.tx_batch(queue_id, buffer);
         }
     }
+
+    /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
+    /// with type [`IxgbeError::NotReady`].
+    ///
+    /// It will try to pop a buffer that completed data reception in the NIC queue.
+    fn receive(&mut self, queue_id: u16, size: usize) -> IxgbeResult<RxBuffer<H>>;
 }
 
 /// Holds network card stats about sent and received packets.
@@ -136,6 +142,16 @@ pub struct DeviceStats {
     pub tx_pkts: u64,
     pub rx_bytes: u64,
     pub tx_bytes: u64,
+}
+
+impl core::fmt::Display for DeviceStats {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "rx_pkts: {}, tx_pkts: {}, rx_bytes: {}, tx_bytes: {}",
+            self.rx_pkts, self.tx_pkts, self.rx_bytes, self.tx_bytes
+        )
+    }
 }
 
 // /// Initializes the network card with the given `pci_addr` and returns a `NicDevice`.
