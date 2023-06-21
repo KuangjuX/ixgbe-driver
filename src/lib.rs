@@ -131,7 +131,7 @@ pub trait NicDevice<H: IxgbeHal> {
     /// with type [`IxgbeError::NotReady`].
     ///
     /// It will try to pop a buffer that completed data reception in the NIC queue.
-    fn receive(&mut self, queue_id: u16, size: usize) -> IxgbeResult<RxBuffer<H>>;
+    fn receive(&mut self, queue_id: u16) -> IxgbeResult<RxBuffer<H>>;
 }
 
 /// Holds network card stats about sent and received packets.

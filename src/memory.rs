@@ -201,6 +201,29 @@ impl<H: IxgbeHal> Packet<H> {
     pub fn get_phys_addr(&self) -> usize {
         self.addr_phys
     }
+
+    /// Returns all data in the buffer, not including header.
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe { slice::from_raw_parts(self.addr_virt, self.len) }
+    }
+
+    /// Returns all data in the buffer with the mutuable reference,
+    /// not including header.
+    pub fn as_mut_bytes(&mut self) -> &mut [u8] {
+        unsafe { slice::from_raw_parts_mut(self.addr_virt, self.len) }
+    }
+
+    /// Returns a mutable slice to the headroom of the pakcet.
+    ///
+    /// The `len` parameter controls how much of the headroom is returned.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `len` is greater than [`PACKET_HEADROOM`]
+    pub fn headroom_mut(&mut self, len: usize) -> &mut [u8] {
+        assert!(len <= PACKET_HEADROOM);
+        unsafe { slice::from_raw_parts_mut(self.addr_virt.sub(len), len) }
+    }
 }
 
 /// Returns a free packet from the `pool`, or [`None`] if the requested packet size exceeds the
