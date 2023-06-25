@@ -15,18 +15,35 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use crate::memory::Packet;
-use alloc::collections::VecDeque;
-
 pub use hal::{BufferDirection, IxgbeHal};
-pub use ixgbe::{IxgbeDevice, IxgbeError, IxgbeResult, RxBuffer};
-pub use memory::PhysAddr;
+pub use ixgbe::{IxgbeDevice, RxBuffer, TxBuffer};
+pub use memory::{Mempool, PhysAddr};
 
 /// Vendor ID for Intel.
 pub const INTEL_VEND: u16 = 0x8086;
 
 /// Device ID for the 82599ES, used to identify the device from the PCI space.
 pub const INTEL_82599: u16 = 0x10FB;
+
+#[derive(Debug)]
+/// Error type for Ixgbe functions.
+pub enum IxgbeError {
+    /// Queue size is not aligned.
+    QueueNotAligned,
+    /// Threr are not enough descriptors available in the queue, try again later.
+    QueueFull,
+    /// No memory
+    NoMemory,
+    /// Allocated page not aligned.
+    PageNotAligned,
+    /// The device is not ready
+    NotReady,
+    /// Invalid `queue_id`
+    InvalidQueue,
+}
+
+/// Result type for Ixgbe functions.
+pub type IxgbeResult<T = ()> = Result<T, IxgbeError>;
 
 /// Used for implementing an ixy device driver like ixgbe or virtio.
 pub trait NicDevice<H: IxgbeHal> {
@@ -41,45 +58,6 @@ pub trait NicDevice<H: IxgbeHal> {
 
     /// Sets the layer 2 address of this device.
     fn set_mac_addr(&self, mac: [u8; 6]);
-
-    /// Pushes up to `num_packets` `Packet`s onto `buffer` depending on the amount of
-    /// received packets by the network card. Returns the number of received packets.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use ixy::*;
-    /// use ixy::memory::Packet;
-    /// use std::collections::VecDeque;
-    ///
-    /// let mut dev = ixy_init("0000:01:00.0", 1, 1, 0).unwrap();
-    /// let mut buf: VecDeque<Packet> = VecDeque::new();
-    ///
-    /// dev.rx_batch(0, &mut buf, 32);
-    /// ```
-    fn rx_batch(
-        &mut self,
-        queue_id: u16,
-        buffer: &mut VecDeque<Packet<H>>,
-        num_packets: usize,
-    ) -> usize;
-
-    /// Takes `Packet`s out of `buffer` until `buffer` is empty or the network card's tx
-    /// queue is full. Returns the number of sent packets.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use ixy::*;
-    /// use ixy::memory::Packet;
-    /// use std::collections::VecDeque;
-    ///
-    /// let mut dev = ixy_init("0000:01:00.0", 1, 1, 0).unwrap();
-    /// let mut buf: VecDeque<Packet> = VecDeque::new();
-    ///
-    /// assert_eq!(dev.tx_batch(0, &mut buf), 0);
-    /// ```
-    fn tx_batch(&mut self, queue_id: u16, buffer: &mut VecDeque<Packet<H>>) -> usize;
 
     /// Reads the network card's stats registers into `stats`.
     ///
@@ -119,19 +97,14 @@ pub trait NicDevice<H: IxgbeHal> {
     /// ```
     fn get_link_speed(&self) -> u16;
 
-    /// Takes `Packet`s out of `buffer` to send out. This will busy wait until all packets from
-    /// `buffer` are queued.
-    fn tx_batch_busy_wait(&mut self, queue_id: u16, buffer: &mut VecDeque<Packet<H>>) {
-        while !buffer.is_empty() {
-            self.tx_batch(queue_id, buffer);
-        }
-    }
-
     /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
     /// with type [`IxgbeError::NotReady`].
     ///
     /// It will try to pop a buffer that completed data reception in the NIC queue.
     fn receive(&mut self, queue_id: u16) -> IxgbeResult<RxBuffer<H>>;
+
+    /// Sends a [`TxBuffer`] to the network.
+    fn send(&mut self, queue_id: u16, tx_buf: TxBuffer<H>) -> IxgbeResult;
 }
 
 /// Holds network card stats about sent and received packets.
@@ -153,6 +126,3 @@ impl core::fmt::Display for DeviceStats {
         )
     }
 }
-
-// /// Initializes the network card with the given `pci_addr` and returns a `NicDevice`.
-// pub fn init_ixgbe<H: IxgbeHal>() -> IxgbeResult<IxgbeDevice<H>> {}

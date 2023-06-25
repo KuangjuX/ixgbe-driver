@@ -3,7 +3,8 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::{cell::RefCell, marker::PhantomData};
 
-use crate::{hal::IxgbeHal, ixgbe::IxgbeResult};
+use crate::hal::IxgbeHal;
+use crate::{IxgbeError, IxgbeResult};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{fmt, slice};
@@ -20,6 +21,7 @@ const HUGE_PAGE_SIZE: usize = 1 << HUGE_PAGE_BITS;
 // which results in a different alignment requirement
 pub const PACKET_HEADROOM: usize = 32;
 
+/// a Memory Pool struct to cache and accelerate memory allocation.
 pub struct Mempool<H: IxgbeHal> {
     base_addr: *mut u8,
     num_entries: usize,
@@ -43,7 +45,7 @@ impl<H: IxgbeHal> Mempool<H> {
 
         if HUGE_PAGE_SIZE % entry_size != 0 {
             error!("entry size must be a divisor of the page size");
-            return Err(crate::ixgbe::IxgbeError::PageNotAligned);
+            return Err(IxgbeError::PageNotAligned);
         }
 
         let dma = Dma::<u8, H>::allocate(entries * entry_size, false)?;
@@ -85,6 +87,7 @@ impl<H: IxgbeHal> Mempool<H> {
         self.free_stack.borrow_mut().push(id);
     }
 
+    /// Return entry size.
     pub fn entry_size(&self) -> usize {
         self.entry_size
     }
@@ -266,3 +269,6 @@ pub enum Prefetch {
     /// Corresponds to _MM_HINT_NTA on x86 sse.
     NonTemporal,
 }
+
+unsafe impl<H: IxgbeHal> Sync for Mempool<H> {}
+unsafe impl<H: IxgbeHal> Send for Mempool<H> {}

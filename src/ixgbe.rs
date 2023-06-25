@@ -1,30 +1,13 @@
 use crate::interrupts::Interrupts;
-use crate::memory::{memset, Dma, Mempool, Packet};
+use crate::memory::{alloc_pkt, memset, Dma, Mempool, Packet};
 use crate::NicDevice;
 use crate::{constants::*, hal::IxgbeHal};
+use crate::{IxgbeError, IxgbeResult};
 use alloc::sync::Arc;
 use alloc::{collections::VecDeque, vec::Vec};
 use core::marker::PhantomData;
 use core::time::Duration;
 use core::{mem, ptr};
-
-#[derive(Debug)]
-/// Error type for Ixgbe functions.
-pub enum IxgbeError {
-    /// Queue size is not aligned.
-    QueueNotAligned,
-    /// No memory
-    NoMemory,
-    /// Allocated page not aligned.
-    PageNotAligned,
-    /// The device is not ready
-    NotReady,
-    /// Invalid `queue_id`
-    InvalidQueue,
-}
-
-/// Result type for Ixgbe functions.
-pub type IxgbeResult<T = ()> = Result<T, IxgbeError>;
 
 const DRIVER_NAME: &str = "ixgbe";
 
@@ -69,7 +52,7 @@ impl<H: IxgbeHal> IxgbeRxQueue<H> {
         let desc = unsafe { self.descriptors.add(rx_index) as *mut ixgbe_adv_rx_desc };
         let status = unsafe { ptr::read_volatile(&mut (*desc).wb.upper.status_error as *mut u32) };
 
-        (status & IXGBE_RXDADV_STAT_DD) == 0
+        status & IXGBE_RXDADV_STAT_DD != 0
     }
 }
 
@@ -82,10 +65,8 @@ struct IxgbeTxQueue<H: IxgbeHal> {
     tx_index: usize,
 }
 
-/// A buffer used for receiving
+/// A buffer used for receiving.
 pub struct RxBuffer<H: IxgbeHal> {
-    // packets: VecDeque<Packet<H>>,
-    // packet_nums: usize,
     packet: Packet<H>,
 }
 
@@ -93,6 +74,32 @@ impl<H: IxgbeHal> RxBuffer<H> {
     /// Returns packets
     pub fn packet(&self) -> &Packet<H> {
         &self.packet
+    }
+}
+
+/// A buffer used for transmitting.
+pub struct TxBuffer<H: IxgbeHal> {
+    packet: Packet<H>,
+}
+
+impl<H: IxgbeHal> TxBuffer<H> {
+    /// Allocate a packet based on [`Mempool`].
+    pub fn alloc(pool: &Arc<Mempool<H>>, size: usize) -> IxgbeResult<Self> {
+        if let Some(pkt) = alloc_pkt(pool, size) {
+            Ok(TxBuffer { packet: pkt })
+        } else {
+            Err(IxgbeError::NoMemory)
+        }
+    }
+
+    /// Returns an unmutuable packet buffer.
+    pub fn packet(&self) -> &[u8] {
+        self.packet.as_bytes()
+    }
+
+    /// Returns a mutuable packet buffer.
+    pub fn packet_mut(&mut self) -> &mut [u8] {
+        self.packet.as_mut_bytes()
     }
 }
 
@@ -159,119 +166,6 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         self.get_reg32(IXGBE_GOTCH);
     }
 
-    /// Pushes up to `num_packets` received `packet`s onto `buffer`
-    fn rx_batch(
-        &mut self,
-        queue_id: u16,
-        buffer: &mut VecDeque<crate::memory::Packet<H>>,
-        num_packets: usize,
-    ) -> usize {
-        let queue = self
-            .rx_queues
-            .get_mut(queue_id as usize)
-            .expect("invalid rx queue id");
-
-        let mut rx_index = queue.rx_index;
-        let mut last_rx_index = queue.rx_index;
-
-        let mut received_packets = 0;
-
-        if self.interrupts.interrupts_enabled
-            && self.interrupts.queues[queue_id as usize].interrupt_enabled
-        {
-            todo!()
-        }
-
-        for i in 0..num_packets {
-            let desc = unsafe { queue.descriptors.add(rx_index) as *mut ixgbe_adv_rx_desc };
-            let status =
-                unsafe { ptr::read_volatile(&mut (*desc).wb.upper.status_error as *mut u32) };
-
-            if (status & IXGBE_RXDADV_STAT_DD) == 0 {
-                break;
-            }
-
-            if (status & IXGBE_RXDADV_STAT_EOP) == 0 {
-                panic!("increase buffer size or decrease MTU")
-            }
-
-            let pool = &queue.pool;
-
-            // get a free buffer from the mempool
-            if let Some(buf) = pool.alloc_buf() {
-                // replace currently used buffer with new buffer
-                let id = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
-
-                let p = Packet::<H> {
-                    addr_virt: pool.get_virt_addr(id),
-                    addr_phys: pool.get_phys_addr(id),
-                    len: unsafe {
-                        ptr::read_volatile(&(*desc).wb.upper.length as *const u16) as usize
-                    },
-                    pool: pool.clone(),
-                    pool_entry: buf,
-                    _marker: PhantomData,
-                };
-
-                #[cfg(all(
-                    any(target_arch = "x86", target_arch = "x86_64"),
-                    target_feature = "sse"
-                ))]
-                p.prefetch(Prefetch::Time1);
-
-                buffer.push_back(p);
-
-                unsafe {
-                    ptr::write_volatile(
-                        &mut (*desc).read.pkt_addr as *mut u64,
-                        pool.get_phys_addr(queue.bufs_in_use[rx_index]) as u64,
-                    );
-                    ptr::write_volatile(&mut (*desc).read.hdr_addr as *mut u64, 0);
-                }
-
-                last_rx_index = rx_index;
-                rx_index = wrap_ring(rx_index, queue.num_descriptors);
-                received_packets = i + 1;
-            } else {
-                // break if there was no free buffer
-                break;
-            }
-        }
-
-        if self.interrupts.interrupts_enabled {
-            // let interrupt = &mut self.interrupts.queues[queue_id as usize];
-            // let int_en = interrupt.interrupt_enabled;
-            // interrupt.rx_pkts += received_packets as u64;
-
-            // interrupt.instr_counter += 1;
-            // if (interrupt.instr_counter & 0xFFF) == 0 {
-            //     interrupt.instr_counter = 0;
-            //     let elapsed = interrupt.last_time_checked.elapsed();
-            //     let diff = elapsed.as_secs() * 1_000_000_000 + u64::from(elapsed.subsec_nanos());
-            //     if diff > interrupt.interval {
-            //         interrupt.check_interrupt(diff, received_packets, num_packets);
-            //     }
-
-            //     if int_en != interrupt.interrupt_enabled {
-            //         if interrupt.interrupt_enabled {
-            //             self.enable_interrupt(queue_id).unwrap();
-            //         } else {
-            //             self.disable_interrupt(queue_id);
-            //         }
-            //     }
-            // }
-
-            todo!()
-        }
-
-        if rx_index != last_rx_index {
-            self.set_reg32(IXGBE_RDT(u32::from(queue_id)), last_rx_index as u32);
-            self.rx_queues[queue_id as usize].rx_index = rx_index;
-        }
-
-        received_packets
-    }
-
     /// Sets the mac address of this device.
     fn set_mac_addr(&self, mac: [u8; 6]) {
         let low: u32 = u32::from(mac[0])
@@ -284,86 +178,13 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         self.set_reg32(IXGBE_RAH(0), high);
     }
 
-    /// Pops as many packets as possible from `buffer` to put them into the device's tx queue.
-    fn tx_batch(
-        &mut self,
-        queue_id: u16,
-        buffer: &mut VecDeque<crate::memory::Packet<H>>,
-    ) -> usize {
-        let mut sent = 0;
-
-        let queue = self
-            .tx_queues
-            .get_mut(queue_id as usize)
-            .expect("Invalid tx queue id");
-
-        let mut cur_index = queue.tx_index;
-        let clean_index = clean_tx_queue(queue);
-
-        if queue.pool.is_none() {
-            if let Some(packet) = buffer.get(0) {
-                queue.pool = Some(packet.pool.clone());
-            }
-        }
-
-        while let Some(packet) = buffer.pop_front() {
-            assert!(
-                Arc::ptr_eq(queue.pool.as_ref().unwrap(), &packet.pool),
-                "distinct memory pools for a single tx queue are not supported yet"
-            );
-
-            let next_index = wrap_ring(cur_index, queue.num_descriptors);
-
-            if clean_index == next_index {
-                // tx queue of device is full, push packet back onto the
-                // queue of to-be-sent packets
-                buffer.push_front(packet);
-                break;
-            }
-
-            queue.tx_index = wrap_ring(queue.tx_index, queue.num_descriptors);
-
-            unsafe {
-                ptr::write_volatile(
-                    &mut (*queue.descriptors.add(cur_index)).read.buffer_addr as *mut u64,
-                    packet.get_phys_addr() as u64,
-                );
-                ptr::write_volatile(
-                    &mut (*queue.descriptors.add(cur_index)).read.cmd_type_len as *mut u32,
-                    IXGBE_ADVTXD_DCMD_EOP
-                        | IXGBE_ADVTXD_DCMD_RS
-                        | IXGBE_ADVTXD_DCMD_IFCS
-                        | IXGBE_ADVTXD_DCMD_DEXT
-                        | IXGBE_ADVTXD_DTYP_DATA
-                        | packet.len() as u32,
-                );
-                ptr::write_volatile(
-                    &mut (*queue.descriptors.add(cur_index)).read.olinfo_status as *mut u32,
-                    (packet.len() as u32) << IXGBE_ADVTXD_PAYLEN_SHIFT,
-                );
-            }
-
-            queue.bufs_in_use.push_back(packet.pool_entry);
-            mem::forget(packet);
-
-            cur_index = next_index;
-            sent += 1;
-        }
-
-        self.set_reg32(
-            IXGBE_TDT(u32::from(queue_id)),
-            self.tx_queues[queue_id as usize].tx_index as u32,
-        );
-
-        sent
-    }
-
     /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
     /// with type [`IxgbeError::NotReady`].
     ///
     /// It will try to pop a buffer that completed data reception in the NIC queue.
     fn receive(&mut self, queue_id: u16) -> IxgbeResult<RxBuffer<H>> {
         // 1. Get received queue.
+
         let queue = self
             .rx_queues
             .get_mut(queue_id as usize)
@@ -371,9 +192,11 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
 
         // Can't receive, return [`IxgbeError::NotReady`]
         if !queue.can_recv() {
+            info!("Can not receive packets.");
             return Err(IxgbeError::NotReady);
         }
 
+        info!("Queue {} has packets", queue_id);
         let mut rx_index = queue.rx_index;
         let last_rx_index = queue.rx_index;
 
@@ -419,10 +242,75 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         }
         Err(IxgbeError::NoMemory)
     }
+
+    fn send(&mut self, queue_id: u16, tx_buf: TxBuffer<H>) -> IxgbeResult {
+        let queue = self
+            .tx_queues
+            .get_mut(queue_id as usize)
+            .ok_or(IxgbeError::InvalidQueue)?;
+
+        let cur_index = queue.tx_index;
+        let clean_index = clean_tx_queue(queue);
+
+        let packet = tx_buf.packet;
+
+        if !Arc::ptr_eq(queue.pool.as_ref().unwrap(), &packet.pool) {
+            queue.pool = Some(packet.pool.clone());
+        }
+
+        assert!(
+            Arc::ptr_eq(queue.pool.as_ref().unwrap(), &packet.pool),
+            "Distince memory pools for a single tx queue are not supported yet."
+        );
+
+        let next_index = wrap_ring(cur_index, queue.num_descriptors);
+
+        if clean_index == next_index {
+            info!("Queue {} is full", queue_id);
+            return Err(IxgbeError::QueueFull);
+        }
+
+        queue.tx_index = wrap_ring(queue.tx_index, queue.num_descriptors);
+
+        unsafe {
+            ptr::write_volatile(
+                &mut (*queue.descriptors.add(cur_index)).read.buffer_addr as *mut u64,
+                packet.get_phys_addr() as u64,
+            );
+
+            ptr::write_volatile(
+                &mut (*queue.descriptors.add(cur_index)).read.cmd_type_len as *mut u32,
+                IXGBE_ADVTXD_DCMD_EOP
+                    | IXGBE_ADVTXD_DCMD_RS
+                    | IXGBE_ADVTXD_DCMD_IFCS
+                    | IXGBE_ADVTXD_DCMD_DEXT
+                    | IXGBE_ADVTXD_DTYP_DATA
+                    | packet.len() as u32,
+            );
+
+            ptr::write_volatile(
+                &mut (*queue.descriptors.add(cur_index)).read.olinfo_status as *mut u32,
+                (packet.len() as u32) << IXGBE_ADVTXD_PAYLEN_SHIFT,
+            );
+        }
+
+        queue.bufs_in_use.push_back(packet.pool_entry);
+        mem::forget(packet);
+
+        self.set_reg32(
+            IXGBE_TDT(u32::from(queue_id)),
+            self.tx_queues[queue_id as usize].tx_index as u32,
+        );
+
+        Ok(())
+    }
 }
 
 impl<H: IxgbeHal> IxgbeDevice<H> {
-    /// Initializes the device at `base` with `len` bytes of memory and `num_rx_queues` receive
+    /// Returns an initialized `IxgbeDevice` on success.
+    ///
+    /// # Panics
+    /// Panics if `num_rx_queues` or `num_tx_queues` exceeds `MAX_QUEUES`.
     pub fn init(
         base: usize,
         len: usize,
@@ -475,7 +363,7 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
         self.wait_clear_reg32(IXGBE_CTRL, IXGBE_CTRL_RST_MASK);
         // TODO: sleep 10 millis.
         // thread::sleep(Duration::from_millis(10));
-        let _ = H::wait_until(Duration::from_millis(10));
+        let _ = H::wait_until(Duration::from_millis(1000));
 
         // section 4.6.3.1 - disable interrupts again after reset
         self.disable_interrupts();
@@ -516,12 +404,6 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
             self.start_tx_queue(i)?;
         }
 
-        // enable interrupts
-        #[cfg(feature = "irq")]
-        for queue in 0..self.num_rx_queues {
-            self.enable_interrupt(queue)?;
-        }
-
         // enable promisc mode by default to make testing easier
         self.set_promisc(true);
 
@@ -554,7 +436,7 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
 
         // configure queues, same for all queues
         for i in 0..self.num_rx_queues {
-            debug!("initializing rx queue {}", i);
+            info!("initializing rx queue {}", i);
             // enable advanced rx descriptors
             self.set_reg32(
                 IXGBE_SRRCTL(u32::from(i)),
@@ -581,8 +463,8 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
             self.set_reg32(IXGBE_RDBAH(u32::from(i)), (dma.phys as u64 >> 32) as u32);
             self.set_reg32(IXGBE_RDLEN(u32::from(i)), ring_size_bytes as u32);
 
-            debug!("rx ring {} phys addr: {:#x}", i, dma.phys);
-            debug!("rx ring {} virt addr: {:p}", i, dma.virt);
+            info!("rx ring {} phys addr: {:#x}", i, dma.phys);
+            info!("rx ring {} virt addr: {:p}", i, dma.virt);
 
             // set ring to empty at start
             self.set_reg32(IXGBE_RDH(u32::from(i)), 0);
@@ -639,7 +521,7 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
 
         // configure queues
         for i in 0..self.num_tx_queues {
-            debug!("initializing tx queue {}", i);
+            info!("initializing tx queue {}", i);
             // section 7.1.9 - setup descriptor ring
             let ring_size_bytes = NUM_TX_QUEUE_ENTRIES * mem::size_of::<ixgbe_adv_tx_desc>();
 
@@ -655,8 +537,8 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
             self.set_reg32(IXGBE_TDBAH(u32::from(i)), (dma.phys as u64 >> 32) as u32);
             self.set_reg32(IXGBE_TDLEN(u32::from(i)), ring_size_bytes as u32);
 
-            debug!("tx ring {} phys addr: {:#x}", i, dma.phys);
-            debug!("tx ring {} virt addr: {:p}", i, dma.virt);
+            info!("tx ring {} phys addr: {:#x}", i, dma.phys);
+            info!("tx ring {} virt addr: {:p}", i, dma.virt);
 
             // descriptor writeback magic values, important to get good performance and low PCIe overhead
             // see 7.2.3.4.1 and 7.2.3.5 for an explanation of these values and how to find good ones
@@ -889,84 +771,6 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
         mask |= 1 << queue_id;
         self.set_reg32(IXGBE_EIMS, mask);
         debug!("Using MSIX interrupts");
-    }
-
-    /// Enable MSI or MSI-X interrupt for queue with `queue_id` depending on which is supported (Prefer MSI-x).
-    fn enable_interrupt(&self, _queue_id: u16) -> IxgbeResult {
-        // if !self.interrupts.interrupts_enabled {
-        //     return Ok(());
-        // }
-        // match self.interrupts.interrupt_type {
-        //     VFIO_PCI_MSIX_IRQ_INDEX => self.enable_msix_interrupt(queue_id),
-        //     VFIO_PCI_MSI_IRQ_INDEX => self.enable_msi_interrupt(queue_id),
-        //     _ => {
-        //         return Err(format!(
-        //             "interrupt type not supported: {}",
-        //             self.interrupts.interrupt_type
-        //         )
-        //         .into());
-        //     }
-        // }
-        // Ok(())
-        todo!()
-    }
-
-    /// Setup interrupts by enabling VFIO interrupts.
-    fn setup_interrupts(&mut self) -> IxgbeResult {
-        // if !self.interrupts.interrupts_enabled {
-        //     self.interrupts.queues = Vec::with_capacity(0);
-        //     return Ok(());
-        // }
-        // self.interrupts.queues = Vec::with_capacity(self.num_rx_queues as usize);
-        // self.interrupts.vfio_setup_interrupt(self.vfio_device_fd)?;
-        // match self.interrupts.interrupt_type {
-        //     VFIO_PCI_MSIX_IRQ_INDEX => {
-        //         for rx_queue in 0..self.num_rx_queues {
-        //             let mut queue = InterruptsQueue {
-        //                 vfio_event_fd: 0,
-        //                 vfio_epoll_fd: 0,
-        //                 last_time_checked: Instant::now(),
-        //                 rx_pkts: 0,
-        //                 moving_avg: Default::default(),
-        //                 interrupt_enabled: true,
-        //                 interval: INTERRUPT_INITIAL_INTERVAL,
-        //                 instr_counter: 0,
-        //             };
-        //             info!("enabling MSIX interrupts for queue {}", rx_queue);
-        //             queue.vfio_enable_msix(self.vfio_device_fd, u32::from(rx_queue))?;
-        //             queue.vfio_epoll_ctl(queue.vfio_event_fd)?;
-        //             self.interrupts.queues.push(queue);
-        //         }
-        //     }
-        //     VFIO_PCI_MSI_IRQ_INDEX => {
-        //         for _rx_queue in 0..self.num_rx_queues {
-        //             let mut queue = InterruptsQueue {
-        //                 vfio_event_fd: 0,
-        //                 vfio_epoll_fd: 0,
-        //                 last_time_checked: Instant::now(),
-        //                 rx_pkts: 0,
-        //                 moving_avg: Default::default(),
-        //                 interrupt_enabled: true,
-        //                 interval: INTERRUPT_INITIAL_INTERVAL,
-        //                 instr_counter: 0,
-        //             };
-        //             info!("enabling MSI interrupts for queue {}", _rx_queue);
-        //             queue.vfio_enable_msi(self.vfio_device_fd)?;
-        //             queue.vfio_epoll_ctl(queue.vfio_event_fd)?;
-        //             self.interrupts.queues.push(queue);
-        //         }
-        //     }
-        //     _ => {
-        //         return Err(format!(
-        //             "interrupt type not supported: {}",
-        //             self.interrupts.interrupt_type
-        //         )
-        //         .into());
-        //     }
-        // }
-        // Ok(())
-
-        todo!()
     }
 
     /// Waits for the link to come up.
