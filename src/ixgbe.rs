@@ -243,6 +243,8 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         Err(IxgbeError::NoMemory)
     }
 
+    /// Sends a [`TxBuffer`] to the network. If currently queue is full, returns an
+    /// error with type [`IxgbeError::QueueFull`].
     fn send(&mut self, queue_id: u16, tx_buf: TxBuffer<H>) -> IxgbeResult {
         let queue = self
             .tx_queues
@@ -254,7 +256,11 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
 
         let packet = tx_buf.packet;
 
-        if !Arc::ptr_eq(queue.pool.as_ref().unwrap(), &packet.pool) {
+        if queue.pool.is_some() {
+            if !Arc::ptr_eq(queue.pool.as_ref().unwrap(), &packet.pool) {
+                queue.pool = Some(packet.pool.clone());
+            }
+        } else {
             queue.pool = Some(packet.pool.clone());
         }
 
