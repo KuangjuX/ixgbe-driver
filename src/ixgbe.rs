@@ -65,15 +65,26 @@ struct IxgbeTxQueue<H: IxgbeHal> {
     tx_index: usize,
 }
 
+impl<H: IxgbeHal> IxgbeTxQueue<H> {
+    fn can_send(&self) -> bool {
+        true
+    }
+}
+
 /// A buffer used for receiving.
 pub struct RxBuffer<H: IxgbeHal> {
     packet: Packet<H>,
 }
 
 impl<H: IxgbeHal> RxBuffer<H> {
-    /// Returns packets
-    pub fn packet(&self) -> &Packet<H> {
-        &self.packet
+    /// Return packet as &[u8].
+    pub fn packet(&self) -> &[u8] {
+        self.packet.as_bytes()
+    }
+
+    /// Return mutuable packet as &mut [u8].
+    pub fn packet_mut(&mut self) -> &mut [u8] {
+        self.packet.as_mut_bytes()
     }
 }
 
@@ -135,10 +146,6 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             (high & 0xff) as u8,
             (high >> 8 & 0xff) as u8,
         ]
-    }
-
-    fn get_pci_addr(&self) -> &str {
-        todo!()
     }
 
     /// Reads the stats of this device into `stats`.
@@ -309,6 +316,24 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         );
 
         Ok(())
+    }
+
+    /// Whether can receiver packet.
+    fn can_receive(&self, queue_id: u16) -> IxgbeResult<bool> {
+        let queue = self
+            .rx_queues
+            .get(queue_id as usize)
+            .ok_or(IxgbeError::InvalidQueue)?;
+        Ok(queue.can_recv())
+    }
+
+    /// Whether can send packet.
+    fn can_send(&self, queue_id: u16) -> IxgbeResult<bool> {
+        let queue = self
+            .tx_queues
+            .get(queue_id as usize)
+            .ok_or(IxgbeError::InvalidQueue)?;
+        Ok(queue.can_send())
     }
 }
 

@@ -50,9 +50,6 @@ pub trait NicDevice<H: IxgbeHal> {
     /// Returns the driver's name.
     fn get_driver_name(&self) -> &str;
 
-    /// Returns the pci address of this device.
-    fn get_pci_addr(&self) -> &str;
-
     /// Returns the layer 2 address of this device.
     fn get_mac_addr(&self) -> [u8; 6];
 
@@ -106,6 +103,12 @@ pub trait NicDevice<H: IxgbeHal> {
     /// Sends a [`TxBuffer`] to the network. If currently queue is full, returns an
     /// error with type [`IxgbeError::QueueFull`].
     fn send(&mut self, queue_id: u16, tx_buf: TxBuffer<H>) -> IxgbeResult;
+
+    /// Whether can receive packet.
+    fn can_receive(&self, queue_id: u16) -> IxgbeResult<bool>;
+
+    /// Whether can send packet.
+    fn can_send(&self, queue_id: u16) -> IxgbeResult<bool>;
 }
 
 /// Holds network card stats about sent and received packets.
