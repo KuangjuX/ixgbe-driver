@@ -8,7 +8,7 @@ authors = ["KuangjuX <kuangjux@outlook.com>"]
 
 [dependencies]
 log = "0.4"
-spinlock = {path = "../spinlock"}
+smoltcp = { version = "0.10.0", features = ["alloc", "log","medium-ethernet","proto-ipv4","socket-raw", "socket-icmp", "socket-udp", "socket-tcp", "socket-dns"], default-features = false}
 
 [features]
 default = []

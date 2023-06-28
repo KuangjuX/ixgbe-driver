@@ -8,6 +8,7 @@ use alloc::{collections::VecDeque, vec::Vec};
 use core::marker::PhantomData;
 use core::time::Duration;
 use core::{mem, ptr};
+use smoltcp::wire::{EthernetFrame, PrettyPrinter};
 
 const DRIVER_NAME: &str = "ixgbe";
 
@@ -199,11 +200,11 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
 
         // Can't receive, return [`IxgbeError::NotReady`]
         if !queue.can_recv() {
-            info!("Can not receive packets.");
+            // info!("Can not receive packets.");
             return Err(IxgbeError::NotReady);
         }
 
-        info!("Queue {} has packets", queue_id);
+        // info!("Queue {} has packets", queue_id);
         let mut rx_index = queue.rx_index;
         let last_rx_index = queue.rx_index;
 
@@ -245,6 +246,13 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             self.set_reg32(IXGBE_VFRDT(u32::from(queue_id)), last_rx_index as u32);
             self.rx_queues[queue_id as usize].rx_index = rx_index;
 
+            info!(
+                "[ixgbe-driver] RECV PACKET: {}",
+                PrettyPrinter::<EthernetFrame<&[u8]>>::new("", &p.as_bytes())
+            );
+
+            info!("RECV CONTENT: {:02X?}", p.as_bytes());
+
             return Ok(RxBuffer { packet: p });
         }
         Err(IxgbeError::NoMemory)
@@ -262,6 +270,12 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         let clean_index = clean_tx_queue(queue);
 
         let packet = tx_buf.packet;
+
+        info!(
+            "[ixgbe-driver] SEND PACKET: {}",
+            PrettyPrinter::<EthernetFrame<&[u8]>>::new("", &packet.as_bytes())
+        );
+        info!("SEND CONTENT: {:02X?}", packet.as_bytes());
 
         if queue.pool.is_some() {
             if !Arc::ptr_eq(queue.pool.as_ref().unwrap(), &packet.pool) {
