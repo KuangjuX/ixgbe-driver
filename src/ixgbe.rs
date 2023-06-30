@@ -341,41 +341,11 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         queue.bufs_in_use.push_back(packet.pool_entry);
         mem::forget(packet);
 
-        // let desc = unsafe { &(*queue.descriptors.add(cur_index)).read };
-        // let tx_index = self.tx_queues[queue_id as usize].tx_index as u32;
         self.set_reg32(
             IXGBE_TDT(u32::from(queue_id)),
             self.tx_queues[queue_id as usize].tx_index as u32,
         );
 
-        // unsafe {
-        //     loop {
-        //         if desc.read.olinfo_status & IXGBE_TXD_STAT_DD == 0 {
-        //             // info!("TX STATUS: {}", desc.read.olinfo_status as u8);
-        //             let _ = H::wait_until(Duration::from_micros(10));
-        //         } else {
-        //             info!("TX send packet.");
-        //             break;
-        //         }
-        //     }
-        // }
-        // let _ = H::wait_until(Duration::from_secs(5));
-        // info!("TX STATUS: {}", unsafe { desc.wb.status } as u8);
-
-        let queue = self
-            .tx_queues
-            .get_mut(queue_id as usize)
-            .ok_or(IxgbeError::InvalidQueue)?;
-        let mut status = unsafe {
-            ptr::read_volatile(&(*queue.descriptors.add(cur_index)).wb.status as *const u32)
-        };
-
-        while status & IXGBE_ADVTXD_STAT_DD == 0 {
-            status = unsafe {
-                ptr::read_volatile(&(*queue.descriptors.add(cur_index)).wb.status as *const u32)
-            };
-        }
-        info!("STATUS: {}", status as u8);
         info!("[Ixgbe::send] SEND PACKET COMPLETE");
         Ok(())
     }
@@ -635,20 +605,13 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
             // descriptor writeback magic values, important to get good performance and low PCIe overhead
             // see 7.2.3.4.1 and 7.2.3.5 for an explanation of these values and how to find good ones
             // we just use the defaults from DPDK here, but this is a potentially interesting point for optimizations
-            // let mut txdctl = self.get_reg32(IXGBE_TXDCTL(u32::from(i)));
+            let mut txdctl = self.get_reg32(IXGBE_TXDCTL(u32::from(i)));
             // there are no defines for this in constants.rs for some reason
             // pthresh: 6:0, hthresh: 14:8, wthresh: 22:16
-            // txdctl &= !(0x7F | (0x7F << 8) | (0x7F << 16));
-            // txdctl |= 36 | (8 << 8) | (4 << 16);
+            txdctl &= !(0x7F | (0x7F << 8) | (0x7F << 16));
+            txdctl |= 36 | (8 << 8) | (4 << 16);
 
-            // self.set_reg32(IXGBE_TXDCTL(u32::from(i)), txdctl);
-
-            // let mut txdctl = self.get_reg32(IXGBE_TXDCTL(u32::from(i)));
-            // txdctl |= 1 << 25;
-
-            // self.set_reg32(IXGBE_TXDCTL(u32::from(i)), txdctl);
-
-            // while self.get_reg32(IXGBE_TXDCTL(u32::from(i))) & (1 << 25) == 0 {}
+            self.set_reg32(IXGBE_TXDCTL(u32::from(i)), txdctl);
 
             let tx_queue = IxgbeTxQueue {
                 descriptors: dma.virt,
@@ -727,13 +690,10 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
     fn start_tx_queue(&mut self, queue_id: u16) -> IxgbeResult {
         debug!("starting tx queue {}", queue_id);
 
-        {
-            let queue = &mut self.tx_queues[queue_id as usize];
+        let queue = &mut self.tx_queues[queue_id as usize];
 
-            if queue.num_descriptors & (queue.num_descriptors - 1) != 0 {
-                // return Err("number of queue entries must be a power of 2".into());
-                return Err(IxgbeError::QueueNotAligned);
-            }
+        if queue.num_descriptors & (queue.num_descriptors - 1) != 0 {
+            return Err(IxgbeError::QueueNotAligned);
         }
 
         // tx queue starts out empty
