@@ -222,11 +222,11 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         // Get a free buffer from the mempool
         if let Some(buf) = pool.alloc_buf() {
             // replace currently used buffer with new buffer.
-            let buf = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
+            let idx = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
 
             let p = Packet::<H> {
-                addr_virt: pool.get_virt_addr(buf),
-                addr_phys: pool.get_phys_addr(buf),
+                addr_virt: pool.get_virt_addr(idx),
+                addr_phys: pool.get_phys_addr(idx),
                 len: unsafe { ptr::read_volatile(&(*desc).wb.upper.length as *const u16) as usize },
                 pool: pool.clone(),
                 pool_entry: buf,
@@ -251,7 +251,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
                 PrettyPrinter::<EthernetFrame<&[u8]>>::new("", &p.as_bytes())
             );
 
-            info!("RECV CONTENT: {:02X?}", p.as_bytes());
+            // info!("RECV CONTENT: {:02X?}", p.as_bytes());
 
             return Ok(RxBuffer { packet: p });
         }
@@ -275,7 +275,6 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             "[ixgbe-driver] SEND PACKET: {}",
             PrettyPrinter::<EthernetFrame<&[u8]>>::new("", &packet.as_bytes())
         );
-        info!("SEND CONTENT: {:02X?}", packet.as_bytes());
 
         if queue.pool.is_some() {
             if !Arc::ptr_eq(queue.pool.as_ref().unwrap(), &packet.pool) {
@@ -297,16 +296,27 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             return Err(IxgbeError::QueueFull);
         }
 
+        // info!("clean index: {}, cur_index: {}", clean_index, cur_index);
+
         queue.tx_index = wrap_ring(queue.tx_index, queue.num_descriptors);
 
+        // let desc = unsafe { &mut *(queue.descriptors.add(cur_index) as *mut ixgbe_adv_tx_desc) };
+
+        info!(
+            "TX phys_addr: {:#x}, virt_addr: {:#x}",
+            packet.get_phys_addr() as u64,
+            packet.get_virt_addr() as u64
+        );
         unsafe {
             ptr::write_volatile(
                 &mut (*queue.descriptors.add(cur_index)).read.buffer_addr as *mut u64,
+                // (&mut desc.read.buffer_addr) as *mut u64,
                 packet.get_phys_addr() as u64,
             );
 
             ptr::write_volatile(
                 &mut (*queue.descriptors.add(cur_index)).read.cmd_type_len as *mut u32,
+                // (&mut desc.read.cmd_type_len) as *mut u32,
                 IXGBE_ADVTXD_DCMD_EOP
                     | IXGBE_ADVTXD_DCMD_RS
                     | IXGBE_ADVTXD_DCMD_IFCS
@@ -317,18 +327,56 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
 
             ptr::write_volatile(
                 &mut (*queue.descriptors.add(cur_index)).read.olinfo_status as *mut u32,
+                // (&mut desc.read.olinfo_status) as *mut u32,
                 (packet.len() as u32) << IXGBE_ADVTXD_PAYLEN_SHIFT,
             );
         }
 
+        info!(
+            "packet phys addr: {:#x}, len: {}",
+            packet.get_phys_addr(),
+            packet.len()
+        );
+
         queue.bufs_in_use.push_back(packet.pool_entry);
         mem::forget(packet);
 
+        // let desc = unsafe { &(*queue.descriptors.add(cur_index)).read };
+        // let tx_index = self.tx_queues[queue_id as usize].tx_index as u32;
         self.set_reg32(
             IXGBE_TDT(u32::from(queue_id)),
             self.tx_queues[queue_id as usize].tx_index as u32,
         );
 
+        // unsafe {
+        //     loop {
+        //         if desc.read.olinfo_status & IXGBE_TXD_STAT_DD == 0 {
+        //             // info!("TX STATUS: {}", desc.read.olinfo_status as u8);
+        //             let _ = H::wait_until(Duration::from_micros(10));
+        //         } else {
+        //             info!("TX send packet.");
+        //             break;
+        //         }
+        //     }
+        // }
+        // let _ = H::wait_until(Duration::from_secs(5));
+        // info!("TX STATUS: {}", unsafe { desc.wb.status } as u8);
+
+        let queue = self
+            .tx_queues
+            .get_mut(queue_id as usize)
+            .ok_or(IxgbeError::InvalidQueue)?;
+        let mut status = unsafe {
+            ptr::read_volatile(&(*queue.descriptors.add(cur_index)).wb.status as *const u32)
+        };
+
+        while status & IXGBE_ADVTXD_STAT_DD == 0 {
+            status = unsafe {
+                ptr::read_volatile(&(*queue.descriptors.add(cur_index)).wb.status as *const u32)
+            };
+        }
+        info!("STATUS: {}", status as u8);
+        info!("[Ixgbe::send] SEND PACKET COMPLETE");
         Ok(())
     }
 
@@ -407,7 +455,6 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
         self.set_reg32(IXGBE_CTRL, IXGBE_CTRL_RST_MASK);
         self.wait_clear_reg32(IXGBE_CTRL, IXGBE_CTRL_RST_MASK);
         // TODO: sleep 10 millis.
-        // thread::sleep(Duration::from_millis(10));
         let _ = H::wait_until(Duration::from_millis(1000));
 
         // section 4.6.3.1 - disable interrupts again after reset
@@ -557,7 +604,7 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
         // section 4.6.11.3.4 - set default buffer size allocations
         self.set_reg32(IXGBE_TXPBSIZE(0), IXGBE_TXPBSIZE_40KB);
         for i in 1..8 {
-            self.set_reg32(IXGBE_TXPBSIZE(i), 0);
+            self.set_reg32(IXGBE_TXPBSIZE(i), 0xff);
         }
 
         // required when not using DCB/VTd
@@ -572,7 +619,7 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
 
             let dma: Dma<ixgbe_adv_tx_desc, H> = Dma::allocate(ring_size_bytes, true)?;
             unsafe {
-                memset(dma.virt as *mut u8, ring_size_bytes, 0xff);
+                memset(dma.virt as *mut u8, ring_size_bytes, 0);
             }
 
             self.set_reg32(
@@ -588,13 +635,20 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
             // descriptor writeback magic values, important to get good performance and low PCIe overhead
             // see 7.2.3.4.1 and 7.2.3.5 for an explanation of these values and how to find good ones
             // we just use the defaults from DPDK here, but this is a potentially interesting point for optimizations
-            let mut txdctl = self.get_reg32(IXGBE_TXDCTL(u32::from(i)));
+            // let mut txdctl = self.get_reg32(IXGBE_TXDCTL(u32::from(i)));
             // there are no defines for this in constants.rs for some reason
             // pthresh: 6:0, hthresh: 14:8, wthresh: 22:16
-            txdctl &= !(0x7F | (0x7F << 8) | (0x7F << 16));
-            txdctl |= 36 | (8 << 8) | (4 << 16);
+            // txdctl &= !(0x7F | (0x7F << 8) | (0x7F << 16));
+            // txdctl |= 36 | (8 << 8) | (4 << 16);
 
-            self.set_reg32(IXGBE_TXDCTL(u32::from(i)), txdctl);
+            // self.set_reg32(IXGBE_TXDCTL(u32::from(i)), txdctl);
+
+            // let mut txdctl = self.get_reg32(IXGBE_TXDCTL(u32::from(i)));
+            // txdctl |= 1 << 25;
+
+            // self.set_reg32(IXGBE_TXDCTL(u32::from(i)), txdctl);
+
+            // while self.get_reg32(IXGBE_TXDCTL(u32::from(i))) & (1 << 25) == 0 {}
 
             let tx_queue = IxgbeTxQueue {
                 descriptors: dma.virt,
@@ -925,6 +979,10 @@ fn clean_tx_queue<H: IxgbeHal>(queue: &mut IxgbeTxQueue<H>) -> usize {
     let mut clean_index = queue.clean_index;
     let cur_index = queue.tx_index;
 
+    // info!(
+    //     "[clean_tx_queue] clean_index: {}, cur_index: {}",
+    //     clean_index, cur_index
+    // );
     loop {
         let mut cleanable = cur_index as i32 - clean_index as i32;
 
@@ -942,11 +1000,13 @@ fn clean_tx_queue<H: IxgbeHal>(queue: &mut IxgbeTxQueue<H>) -> usize {
             cleanup_to -= queue.num_descriptors;
         }
 
+        // info!("[clean_tx_index] cleanup_to: {}", cleanup_to);
         let status = unsafe {
             ptr::read_volatile(&(*queue.descriptors.add(cleanup_to)).wb.status as *const u32)
         };
 
         if (status & IXGBE_ADVTXD_STAT_DD) != 0 {
+            // info!("[clean_tx_index] STATUS DD");
             if let Some(ref p) = queue.pool {
                 if TX_CLEAN_BATCH >= queue.bufs_in_use.len() {
                     p.free_stack

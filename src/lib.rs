@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 mod constants;
+mod descriptor;
 mod hal;
 mod interrupts;
 mod ixgbe;
