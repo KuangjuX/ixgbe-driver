@@ -61,28 +61,6 @@ where
     ///
     unsafe fn mmio_virt_to_phys(vaddr: NonNull<u8>, size: usize) -> PhysAddr;
 
-    // /// Shares the given memory range with the device, and returns the physical address that the
-    // /// device can use to access it.
-    // ///
-    // /// This may involve mapping the buffer into an IOMMU, giving the host permission to access the
-    // /// memory, or copying it to a special region where it can be accessed.
-    // ///
-    // /// # Safety
-    // ///
-    // /// The buffer must be a valid pointer to memory which will not be accessed by any other thread
-    // /// for the duration of this method call.
-    // unsafe fn share(buffer: NonNull<[u8]>, direction: BufferDirection) -> PhysAddr;
-
-    // /// Unshares the given memory range from the device and (if necessary) copies it back to the
-    // /// original buffer.
-    // ///
-    // /// # Safety
-    // ///
-    // /// The buffer must be a valid pointer to memory which will not be accessed by any other thread
-    // /// for the duration of this method call. The `paddr` must be the value previously returned by
-    // /// the corresponding `share` call.
-    // unsafe fn unshare(paddr: PhysAddr, buffer: NonNull<[u8]>, direction: BufferDirection);
-
     /// Returns the frequency of the TSC in Hz.
     fn get_tsc_frequency() -> u64;
 

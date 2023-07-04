@@ -244,13 +244,6 @@ pub fn alloc_pkt(pool: &Arc<MemPool>, size: usize) -> Option<Packet> {
     })
 }
 
-/// Initializes `len` fields of type `T` at `addr` with `value`.
-pub(crate) unsafe fn memset<T: Copy>(addr: *mut T, len: usize, value: T) {
-    for i in 0..len {
-        core::ptr::write_volatile(addr.add(i) as *mut T, value);
-    }
-}
-
 /// Common representation for prefetch strategies.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Prefetch {

@@ -815,19 +815,22 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
 
     /// Waits for the link to come up.
     fn wait_for_link(&self) {
-        info!("waiting for link");
-        // get the current time in seconds
-        let time = unsafe { core::arch::x86_64::_rdtsc() / H::get_tsc_frequency() };
-        let mut speed = self.get_link_speed();
-        while speed == 0
-            && unsafe { core::arch::x86_64::_rdtsc() / H::get_tsc_frequency() - time } < 10
+        #[cfg(target_arch = "x86_64")]
         {
-            // thread::sleep(Duration::from_millis(100));
-            core::hint::spin_loop();
-            // let _ = H::wait_ms(100);
-            speed = self.get_link_speed();
+            info!("waiting for link");
+            // get the current time in seconds
+            let time = unsafe { core::arch::x86_64::_rdtsc() / H::get_tsc_frequency() };
+            let mut speed = self.get_link_speed();
+            while speed == 0
+                && unsafe { core::arch::x86_64::_rdtsc() / H::get_tsc_frequency() - time } < 10
+            {
+                // thread::sleep(Duration::from_millis(100));
+                core::hint::spin_loop();
+                // let _ = H::wait_ms(100);
+                speed = self.get_link_speed();
+            }
+            info!("link speed is {} Mbit/s", self.get_link_speed());
         }
-        info!("link speed is {} Mbit/s", self.get_link_speed());
     }
 
     /// Enables or disables promisc mode of this device.
