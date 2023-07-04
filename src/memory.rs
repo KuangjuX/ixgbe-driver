@@ -22,22 +22,21 @@ const HUGE_PAGE_SIZE: usize = 1 << HUGE_PAGE_BITS;
 pub const PACKET_HEADROOM: usize = 32;
 
 /// a Memory Pool struct to cache and accelerate memory allocation.
-pub struct Mempool<H: IxgbeHal> {
+pub struct MemPool {
     base_addr: *mut u8,
     num_entries: usize,
     entry_size: usize,
     phys_addr: Vec<usize>,
     pub(crate) free_stack: RefCell<Vec<usize>>,
-    _marker: PhantomData<H>,
 }
 
-impl<H: IxgbeHal> Mempool<H> {
+impl MemPool {
     /// Allocates a new `Mempool`.
     ///
     /// # Panics
     ///
     /// Panics if `size` is not a divisor of the page size.
-    pub fn allocate(entries: usize, size: usize) -> IxgbeResult<Arc<Mempool<H>>> {
+    pub fn allocate<H: IxgbeHal>(entries: usize, size: usize) -> IxgbeResult<Arc<MemPool>> {
         let entry_size = match size {
             0 => 2048,
             x => x,
@@ -60,13 +59,12 @@ impl<H: IxgbeHal> Mempool<H> {
             })
         }
 
-        let pool = Mempool::<H> {
+        let pool = MemPool {
             base_addr: dma.virt,
             num_entries: entries,
             entry_size,
             phys_addr,
             free_stack: RefCell::new(Vec::with_capacity(entries)),
-            _marker: PhantomData,
         };
 
         let pool = Arc::new(pool);
@@ -113,11 +111,12 @@ pub struct Dma<T, H: IxgbeHal> {
 
 impl<T, H: IxgbeHal> Dma<T, H> {
     pub fn allocate(size: usize, _require_contiguous: bool) -> IxgbeResult<Dma<T, H>> {
-        let size = if size % HUGE_PAGE_SIZE != 0 {
-            ((size >> HUGE_PAGE_BITS) + 1) << HUGE_PAGE_BITS
-        } else {
-            size
-        };
+        // let size = if size % HUGE_PAGE_SIZE != 0 {
+        //     ((size >> HUGE_PAGE_BITS) + 1) << HUGE_PAGE_BITS
+        // } else {
+        //     size
+        // };
+        let size = if size < 0x1000 { 0x1000 } else { size };
         let (pa, va) = H::dma_alloc(size / 0x1000, crate::BufferDirection::Both);
         info!(
             "allocated DMA memory @pa: {:#x}, va: {:#x}, size: {:#x}",
@@ -133,16 +132,15 @@ impl<T, H: IxgbeHal> Dma<T, H> {
     }
 }
 
-pub struct Packet<H: IxgbeHal> {
+pub struct Packet {
     pub(crate) addr_virt: *mut u8,
     pub(crate) addr_phys: usize,
     pub(crate) len: usize,
-    pub(crate) pool: Arc<Mempool<H>>,
+    pub(crate) pool: Arc<MemPool>,
     pub(crate) pool_entry: usize,
-    pub(crate) _marker: PhantomData<H>,
 }
 
-impl<H: IxgbeHal> Clone for Packet<H> {
+impl Clone for Packet {
     fn clone(&self) -> Self {
         let mut p = alloc_pkt(&self.pool, self.len).expect("no buffer available");
         p.clone_from_slice(self);
@@ -151,7 +149,7 @@ impl<H: IxgbeHal> Clone for Packet<H> {
     }
 }
 
-impl<H: IxgbeHal> Deref for Packet<H> {
+impl Deref for Packet {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
@@ -159,40 +157,39 @@ impl<H: IxgbeHal> Deref for Packet<H> {
     }
 }
 
-impl<H: IxgbeHal> DerefMut for Packet<H> {
+impl DerefMut for Packet {
     fn deref_mut(&mut self) -> &mut [u8] {
         unsafe { slice::from_raw_parts_mut(self.addr_virt, self.len) }
     }
 }
 
-impl<H: IxgbeHal> Debug for Packet<H> {
+impl Debug for Packet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         (**self).fmt(f)
     }
 }
 
-impl<H: IxgbeHal> Drop for Packet<H> {
+impl Drop for Packet {
     fn drop(&mut self) {
         self.pool.free_buf(self.pool_entry);
     }
 }
 
-impl<H: IxgbeHal> Packet<H> {
+impl Packet {
     /// Returns a new `Packet`.
     pub(crate) unsafe fn new(
         addr_virt: *mut u8,
         addr_phys: usize,
         len: usize,
-        pool: Arc<Mempool<H>>,
+        pool: Arc<MemPool>,
         pool_entry: usize,
-    ) -> Packet<H> {
-        Packet::<H> {
+    ) -> Packet {
+        Packet {
             addr_virt,
             addr_phys,
             len,
             pool,
             pool_entry,
-            _marker: PhantomData,
         }
     }
     /// Returns the virtual address of the packet.
@@ -231,7 +228,7 @@ impl<H: IxgbeHal> Packet<H> {
 
 /// Returns a free packet from the `pool`, or [`None`] if the requested packet size exceeds the
 /// maximum size for that pool or if the pool is empty.
-pub fn alloc_pkt<H: IxgbeHal>(pool: &Arc<Mempool<H>>, size: usize) -> Option<Packet<H>> {
+pub fn alloc_pkt(pool: &Arc<MemPool>, size: usize) -> Option<Packet> {
     if size > pool.entry_size - PACKET_HEADROOM {
         return None;
     }
@@ -270,5 +267,5 @@ pub enum Prefetch {
     NonTemporal,
 }
 
-unsafe impl<H: IxgbeHal> Sync for Mempool<H> {}
-unsafe impl<H: IxgbeHal> Send for Mempool<H> {}
+unsafe impl Sync for MemPool {}
+unsafe impl Send for MemPool {}

@@ -1,6 +1,6 @@
 use crate::descriptor::{AdvancedRxDescriptor, AdvancedTxDescriptor, RX_STATUS_DD, RX_STATUS_EOP};
 use crate::interrupts::Interrupts;
-use crate::memory::{alloc_pkt, Dma, Mempool, Packet};
+use crate::memory::{alloc_pkt, Dma, MemPool, Packet};
 use crate::NicDevice;
 use crate::{constants::*, hal::IxgbeHal};
 use crate::{IxgbeError, IxgbeResult};
@@ -35,21 +35,21 @@ pub struct IxgbeDevice<H: IxgbeHal> {
     len: usize,
     num_rx_queues: u16,
     num_tx_queues: u16,
-    rx_queues: Vec<IxgbeRxQueue<H>>,
-    tx_queues: Vec<IxgbeTxQueue<H>>,
+    rx_queues: Vec<IxgbeRxQueue>,
+    tx_queues: Vec<IxgbeTxQueue>,
     interrupts: Interrupts,
     _marker: PhantomData<H>,
 }
 
-struct IxgbeRxQueue<H: IxgbeHal> {
+struct IxgbeRxQueue {
     descriptors: Box<[NonNull<AdvancedRxDescriptor>]>,
     num_descriptors: usize,
-    pool: Arc<Mempool<H>>,
+    pool: Arc<MemPool>,
     bufs_in_use: Vec<usize>,
     rx_index: usize,
 }
 
-impl<H: IxgbeHal> IxgbeRxQueue<H> {
+impl IxgbeRxQueue {
     fn can_recv(&self) -> bool {
         let rx_index = self.rx_index;
 
@@ -59,28 +59,28 @@ impl<H: IxgbeHal> IxgbeRxQueue<H> {
     }
 }
 
-struct IxgbeTxQueue<H: IxgbeHal> {
+struct IxgbeTxQueue {
     // descriptors: *mut ixgbe_adv_tx_desc,
     descriptors: Box<[NonNull<AdvancedTxDescriptor>]>,
     num_descriptors: usize,
-    pool: Option<Arc<Mempool<H>>>,
+    pool: Option<Arc<MemPool>>,
     bufs_in_use: VecDeque<usize>,
     clean_index: usize,
     tx_index: usize,
 }
 
-impl<H: IxgbeHal> IxgbeTxQueue<H> {
+impl IxgbeTxQueue {
     fn can_send(&self) -> bool {
         true
     }
 }
 
 /// A buffer used for receiving.
-pub struct RxBuffer<H: IxgbeHal> {
-    packet: Packet<H>,
+pub struct RxBuffer {
+    packet: Packet,
 }
 
-impl<H: IxgbeHal> RxBuffer<H> {
+impl RxBuffer {
     /// Return packet as &[u8].
     pub fn packet(&self) -> &[u8] {
         self.packet.as_bytes()
@@ -93,13 +93,13 @@ impl<H: IxgbeHal> RxBuffer<H> {
 }
 
 /// A buffer used for transmitting.
-pub struct TxBuffer<H: IxgbeHal> {
-    packet: Packet<H>,
+pub struct TxBuffer {
+    packet: Packet,
 }
 
-impl<H: IxgbeHal> TxBuffer<H> {
+impl TxBuffer {
     /// Allocate a packet based on [`Mempool`].
-    pub fn alloc(pool: &Arc<Mempool<H>>, size: usize) -> IxgbeResult<Self> {
+    pub fn alloc(pool: &Arc<MemPool>, size: usize) -> IxgbeResult<Self> {
         if let Some(pkt) = alloc_pkt(pool, size) {
             Ok(TxBuffer { packet: pkt })
         } else {
@@ -193,7 +193,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
     /// with type [`IxgbeError::NotReady`].
     ///
     /// It will try to pop a buffer that completed data reception in the NIC queue.
-    fn receive(&mut self, queue_id: u16) -> IxgbeResult<RxBuffer<H>> {
+    fn receive(&mut self, queue_id: u16) -> IxgbeResult<RxBuffer> {
         // 1. Get received queue.
 
         let queue = self
@@ -227,13 +227,12 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             // replace currently used buffer with new buffer.
             let idx = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
 
-            let packet = Packet::<H> {
+            let packet = Packet {
                 addr_virt: pool.get_virt_addr(idx),
                 addr_phys: pool.get_phys_addr(idx),
                 len: desc.length() as usize,
                 pool: pool.clone(),
                 pool_entry: buf,
-                _marker: PhantomData,
             };
 
             desc.set_packet_address(pool.get_phys_addr(queue.bufs_in_use[rx_index]) as u64);
@@ -256,7 +255,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
 
     /// Sends a [`TxBuffer`] to the network. If currently queue is full, returns an
     /// error with type [`IxgbeError::QueueFull`].
-    fn send(&mut self, queue_id: u16, tx_buf: TxBuffer<H>) -> IxgbeResult {
+    fn send(&mut self, queue_id: u16, tx_buf: TxBuffer) -> IxgbeResult {
         let queue = self
             .tx_queues
             .get_mut(queue_id as usize)
@@ -291,8 +290,6 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             info!("Queue {} is full", queue_id);
             return Err(IxgbeError::QueueFull);
         }
-
-        // info!("clean index: {}, cur_index: {}", clean_index, cur_index);
 
         queue.tx_index = wrap_ring(queue.tx_index, queue.num_descriptors);
 
@@ -521,7 +518,7 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
                 NUM_RX_QUEUE_ENTRIES + NUM_TX_QUEUE_ENTRIES
             };
 
-            let mempool = Mempool::allocate(mempool_size, PKT_BUF_ENTRY_SIZE).unwrap();
+            let mempool = MemPool::allocate::<H>(mempool_size, PKT_BUF_ENTRY_SIZE).unwrap();
 
             let rx_queue = IxgbeRxQueue {
                 descriptors: Box::new(descriptors),
@@ -919,7 +916,7 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
 }
 
 /// Removes multiples of `TX_CLEAN_BATCH` packets from `queue`.
-fn clean_tx_queue<H: IxgbeHal>(queue: &mut IxgbeTxQueue<H>) -> usize {
+fn clean_tx_queue(queue: &mut IxgbeTxQueue) -> usize {
     let mut clean_index = queue.clean_index;
     let cur_index = queue.tx_index;
 

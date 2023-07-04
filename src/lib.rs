@@ -18,7 +18,7 @@ extern crate log;
 
 pub use hal::{BufferDirection, IxgbeHal};
 pub use ixgbe::{IxgbeDevice, RxBuffer, TxBuffer};
-pub use memory::{alloc_pkt, Mempool, PhysAddr};
+pub use memory::{alloc_pkt, MemPool, PhysAddr};
 
 /// Vendor ID for Intel.
 pub const INTEL_VEND: u16 = 0x8086;
@@ -99,11 +99,11 @@ pub trait NicDevice<H: IxgbeHal> {
     /// with type [`IxgbeError::NotReady`].
     ///
     /// It will try to pop a buffer that completed data reception in the NIC queue.
-    fn receive(&mut self, queue_id: u16) -> IxgbeResult<RxBuffer<H>>;
+    fn receive(&mut self, queue_id: u16) -> IxgbeResult<RxBuffer>;
 
     /// Sends a [`TxBuffer`] to the network. If currently queue is full, returns an
     /// error with type [`IxgbeError::QueueFull`].
-    fn send(&mut self, queue_id: u16, tx_buf: TxBuffer<H>) -> IxgbeResult;
+    fn send(&mut self, queue_id: u16, tx_buf: TxBuffer) -> IxgbeResult;
 
     /// Whether can receive packet.
     fn can_receive(&self, queue_id: u16) -> IxgbeResult<bool>;

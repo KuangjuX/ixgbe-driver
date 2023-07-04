@@ -8,7 +8,10 @@ use core::time::Duration;
 ///
 /// Implementations of this trait must follow the "implementation safety" requirements documented
 /// for each method. Callers must follow the safety requirements documented for the unsafe methods.
-pub unsafe trait IxgbeHal {
+pub unsafe trait IxgbeHal
+where
+    Self: Sized,
+{
     /// Allocates and zeroes the given number of contiguous physical pages of DMA memory for VirtIO
     /// use.
     ///
