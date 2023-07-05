@@ -12,7 +12,7 @@ pub unsafe trait IxgbeHal
 where
     Self: Sized,
 {
-    /// Allocates and zeroes the given number of contiguous physical pages of DMA memory for VirtIO
+    /// Allocates and zeroes the given number of contiguous physical memory of DMA memory for Ixgbe NIC
     /// use.
     ///
     /// Returns both the physical address which the device can use to access the memory, and a
@@ -22,18 +22,18 @@ where
     ///
     /// Implementations of this method must ensure that the `NonNull<u8>` returned is a
     /// [_valid_](https://doc.rust-lang.org/std/ptr/index.html#safety) pointer, aligned to
-    /// [`PAGE_SIZE`], and won't alias any other allocations or references in the program until it
+    /// 2, and won't alias any other allocations or references in the program until it
     /// is deallocated by `dma_dealloc`. The pages must be zeroed.
-    fn dma_alloc(pages: usize, direction: BufferDirection) -> (PhysAddr, NonNull<u8>);
+    fn dma_alloc(size: usize) -> (PhysAddr, NonNull<u8>);
 
     /// Deallocates the given contiguous physical DMA memory pages.
     ///
     /// # Safety
     ///
     /// The memory must have been allocated by `dma_alloc` on the same `Hal` implementation, and not
-    /// yet deallocated. `pages` must be the same number passed to `dma_alloc` originally, and both
+    /// yet deallocated. `size` must be the same number passed to `dma_alloc` originally, and both
     /// `paddr` and `vaddr` must be the values returned by `dma_alloc`.
-    unsafe fn dma_dealloc(paddr: PhysAddr, vaddr: NonNull<u8>, pages: usize) -> i32;
+    unsafe fn dma_dealloc(paddr: PhysAddr, vaddr: NonNull<u8>, size: usize) -> i32;
 
     /// Converts a physical address used for MMIO to a virtual address which the driver can access.
     ///

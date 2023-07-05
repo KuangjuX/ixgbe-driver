@@ -116,8 +116,9 @@ impl<T, H: IxgbeHal> Dma<T, H> {
         // } else {
         //     size
         // };
-        let size = if size < 0x1000 { 0x1000 } else { size };
-        let (pa, va) = H::dma_alloc(size / 0x1000, crate::BufferDirection::Both);
+        // let size = if size < 0x1000 { 0x1000 } else { size };
+        // let (pa, va) = H::dma_alloc(size / 0x1000, crate::BufferDirection::Both);
+        let (pa, va) = H::dma_alloc(size);
         info!(
             "allocated DMA memory @pa: {:#x}, va: {:#x}, size: {:#x}",
             pa,
