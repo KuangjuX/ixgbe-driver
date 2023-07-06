@@ -16,6 +16,7 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
+use alloc::{collections::VecDeque, vec::Vec};
 pub use hal::{BufferDirection, IxgbeHal};
 pub use ixgbe::{IxgbeDevice, RxBuffer, TxBuffer};
 pub use memory::{alloc_pkt, MemPool, PhysAddr};
@@ -57,42 +58,10 @@ pub trait NicDevice<H: IxgbeHal> {
     /// Sets the layer 2 address of this device.
     fn set_mac_addr(&self, mac: [u8; 6]);
 
-    /// Reads the network card's stats registers into `stats`.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use ixy::*;
-    ///
-    /// let mut dev = ixy_init("0000:01:00.0", 1, 1, 0).unwrap();
-    /// let mut stats: DeviceStats = Default::default();
-    ///
-    /// dev.read_stats(&mut stats);
-    /// ```
-    fn read_stats(&self, stats: &mut DeviceStats);
-
     /// Resets the network card's stats registers.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use ixy::*;
-    ///
-    /// let mut dev = ixy_init("0000:01:00.0", 1, 1, 0).unwrap();
-    /// dev.reset_stats();
-    /// ```
     fn reset_stats(&mut self);
 
     /// Returns the network card's link speed.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// use ixy::*;
-    ///
-    /// let mut dev = ixy_init("0000:01:00.0", 1, 1, 0).unwrap();
-    /// println!("Link speed is {} Mbit/s", dev.get_link_speed());
-    /// ```
     fn get_link_speed(&self) -> u16;
 
     /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
@@ -101,9 +70,17 @@ pub trait NicDevice<H: IxgbeHal> {
     /// It will try to pop a buffer that completed data reception in the NIC queue.
     fn receive(&mut self, queue_id: u16) -> IxgbeResult<RxBuffer>;
 
-    /// Sends a [`TxBuffer`] to the network. If currently queue is full, returns an
+    /// Receives `packet_nums` [`RxBuffer`] from network. If currently no data, returns an error
+    /// with type [`IxgbeError::NotReady`].
+    fn receive_packets(&mut self, queue_id: u16, packet_nums: usize) -> IxgbeResult<Vec<RxBuffer>>;
+
+    /// Sends a [`TxBuffer`] to network. If currently queue is full, returns an
     /// error with type [`IxgbeError::QueueFull`].
     fn send(&mut self, queue_id: u16, tx_buf: TxBuffer) -> IxgbeResult;
+
+    /// Sends `packet_nums` [`TxBuffer`] to network. If currently queue is full, returns an
+    /// error with type [`IxgbeError::QueueFull`].
+    fn send_packets(&mut self, queue_id: u16, tx_bufs: &mut VecDeque<TxBuffer>) -> IxgbeResult;
 
     /// Whether can receive packet.
     fn can_receive(&self, queue_id: u16) -> IxgbeResult<bool>;

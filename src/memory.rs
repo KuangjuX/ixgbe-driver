@@ -225,6 +225,23 @@ impl Packet {
         assert!(len <= PACKET_HEADROOM);
         unsafe { slice::from_raw_parts_mut(self.addr_virt.sub(len), len) }
     }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    pub(crate) fn prefrtch(&self, hint: Prefetch) {
+        if core_detect::is_x86_feature_detected!("sse") {
+            let addr = self.get_virt_addr() as *const _;
+            unsafe {
+                use core::arch::x86_64;
+                match hint {
+                    Prefetch::Time0 => x86_64::_mm_prefetch(addr, x86_64::_MM_HINT_T0),
+                    Prefetch::Time1 => x86_64::_mm_prefetch(addr, x86_64::_MM_HINT_T1),
+                    Prefetch::Time2 => x86_64::_mm_prefetch(addr, x86_64::_MM_HINT_T2),
+                    Prefetch::NonTemporal => x86_64::_mm_prefetch(addr, x86_64::_MM_HINT_NTA),
+                }
+            }
+        }
+    }
 }
 
 /// Returns a free packet from the `pool`, or [`None`] if the requested packet size exceeds the
