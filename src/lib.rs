@@ -18,7 +18,8 @@ extern crate log;
 
 use alloc::{collections::VecDeque, vec::Vec};
 pub use hal::{BufferDirection, IxgbeHal};
-pub use ixgbe::{IxgbeDevice, RxBuffer, TxBuffer};
+pub use ixgbe::{IxgbeDevice, IxgbeNetBuf};
+
 pub use memory::{alloc_pkt, MemPool, PhysAddr};
 
 /// Vendor ID for Intel.
@@ -55,9 +56,6 @@ pub trait NicDevice<H: IxgbeHal> {
     /// Returns the layer 2 address of this device.
     fn get_mac_addr(&self) -> [u8; 6];
 
-    /// Sets the layer 2 address of this device.
-    fn set_mac_addr(&self, mac: [u8; 6]);
-
     /// Resets the network card's stats registers.
     fn reset_stats(&mut self);
 
@@ -68,19 +66,23 @@ pub trait NicDevice<H: IxgbeHal> {
     /// with type [`IxgbeError::NotReady`].
     ///
     /// It will try to pop a buffer that completed data reception in the NIC queue.
-    fn receive(&mut self, queue_id: u16) -> IxgbeResult<RxBuffer>;
+    fn receive(&mut self, queue_id: u16) -> IxgbeResult<IxgbeNetBuf>;
 
     /// Receives `packet_nums` [`RxBuffer`] from network. If currently no data, returns an error
     /// with type [`IxgbeError::NotReady`].
-    fn receive_packets(&mut self, queue_id: u16, packet_nums: usize) -> IxgbeResult<Vec<RxBuffer>>;
+    fn receive_packets(
+        &mut self,
+        queue_id: u16,
+        packet_nums: usize,
+    ) -> IxgbeResult<Vec<IxgbeNetBuf>>;
 
     /// Sends a [`TxBuffer`] to network. If currently queue is full, returns an
     /// error with type [`IxgbeError::QueueFull`].
-    fn send(&mut self, queue_id: u16, tx_buf: TxBuffer) -> IxgbeResult;
+    fn send(&mut self, queue_id: u16, tx_buf: IxgbeNetBuf) -> IxgbeResult;
 
     /// Sends `packet_nums` [`TxBuffer`] to network. If currently queue is full, returns an
     /// error with type [`IxgbeError::QueueFull`].
-    fn send_packets(&mut self, queue_id: u16, tx_bufs: &mut VecDeque<TxBuffer>) -> IxgbeResult;
+    fn send_packets(&mut self, queue_id: u16, tx_bufs: &mut VecDeque<IxgbeNetBuf>) -> IxgbeResult;
 
     /// Whether can receive packet.
     fn can_receive(&self, queue_id: u16) -> IxgbeResult<bool>;

@@ -75,33 +75,16 @@ impl IxgbeTxQueue {
     }
 }
 
-/// A buffer used for receiving.
-pub struct RxBuffer {
+/// A packet buffer for ixgbe.
+pub struct IxgbeNetBuf {
     packet: Packet,
 }
 
-impl RxBuffer {
-    /// Return packet as &[u8].
-    pub fn packet(&self) -> &[u8] {
-        self.packet.as_bytes()
-    }
-
-    /// Return mutuable packet as &mut [u8].
-    pub fn packet_mut(&mut self) -> &mut [u8] {
-        self.packet.as_mut_bytes()
-    }
-}
-
-/// A buffer used for transmitting.
-pub struct TxBuffer {
-    packet: Packet,
-}
-
-impl TxBuffer {
+impl IxgbeNetBuf {
     /// Allocate a packet based on [`MemPool`].
     pub fn alloc(pool: &Arc<MemPool>, size: usize) -> IxgbeResult<Self> {
         if let Some(pkt) = alloc_pkt(pool, size) {
-            Ok(TxBuffer { packet: pkt })
+            Ok(Self { packet: pkt })
         } else {
             Err(IxgbeError::NoMemory)
         }
@@ -115,6 +98,11 @@ impl TxBuffer {
     /// Returns a mutuable packet buffer.
     pub fn packet_mut(&mut self) -> &mut [u8] {
         self.packet.as_mut_bytes()
+    }
+
+    /// Returns the length of the packet.
+    pub fn packet_len(&self) -> usize {
+        self.packet.len
     }
 }
 
@@ -162,23 +150,11 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         self.get_reg32(IXGBE_GOTCH);
     }
 
-    /// Sets the mac address of this device.
-    fn set_mac_addr(&self, mac: [u8; 6]) {
-        let low: u32 = u32::from(mac[0])
-            + (u32::from(mac[1]) << 8)
-            + (u32::from(mac[2]) << 16)
-            + (u32::from(mac[3]) << 24);
-        let high: u32 = u32::from(mac[4]) + (u32::from(mac[5]) << 8);
-
-        self.set_reg32(IXGBE_RAL(0), low);
-        self.set_reg32(IXGBE_RAH(0), high);
-    }
-
     /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
     /// with type [`IxgbeError::NotReady`].
     ///
     /// It will try to pop a buffer that completed data reception in the NIC queue.
-    fn receive(&mut self, queue_id: u16) -> IxgbeResult<RxBuffer> {
+    fn receive(&mut self, queue_id: u16) -> IxgbeResult<IxgbeNetBuf> {
         // 1. Get received queue.
 
         let queue = self
@@ -208,13 +184,14 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         if let Some(buf) = pool.alloc_buf() {
             // replace currently used buffer with new buffer.
             let idx = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
-
-            let packet = Packet {
-                addr_virt: pool.get_virt_addr(idx),
-                addr_phys: pool.get_phys_addr(idx),
-                len: desc.length() as usize,
-                pool: pool.clone(),
-                pool_entry: idx,
+            let packet = unsafe {
+                Packet::new(
+                    pool.get_virt_addr(idx),
+                    pool.get_phys_addr(idx),
+                    desc.length() as usize,
+                    pool.clone(),
+                    idx,
+                )
             };
 
             desc.set_packet_address(pool.get_phys_addr(queue.bufs_in_use[rx_index]) as u64);
@@ -230,13 +207,17 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
                 PrettyPrinter::<EthernetFrame<&[u8]>>::new("", &packet.as_bytes())
             );
 
-            return Ok(RxBuffer { packet });
+            return Ok(IxgbeNetBuf { packet });
         }
         Err(IxgbeError::NoMemory)
     }
 
-    fn receive_packets(&mut self, queue_id: u16, packet_nums: usize) -> IxgbeResult<Vec<RxBuffer>> {
-        let mut rx_bufs: Vec<RxBuffer> = Vec::new();
+    fn receive_packets(
+        &mut self,
+        queue_id: u16,
+        packet_nums: usize,
+    ) -> IxgbeResult<Vec<IxgbeNetBuf>> {
+        let mut rx_bufs = Vec::new();
         let queue = self
             .rx_queues
             .get_mut(queue_id as usize)
@@ -267,18 +248,20 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             if let Some(buf) = pool.alloc_buf() {
                 let idx = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
 
-                let packet = Packet {
-                    addr_virt: pool.get_virt_addr(idx),
-                    addr_phys: pool.get_phys_addr(idx),
-                    len: desc.length() as usize,
-                    pool: pool.clone(),
-                    pool_entry: idx,
+                let packet = unsafe {
+                    Packet::new(
+                        pool.get_virt_addr(idx),
+                        pool.get_phys_addr(idx),
+                        desc.length() as usize,
+                        pool.clone(),
+                        idx,
+                    )
                 };
 
                 #[cfg(target_arch = "x86_64")]
                 packet.prefrtch(crate::memory::Prefetch::Time0);
 
-                rx_bufs.push(RxBuffer { packet });
+                rx_bufs.push(IxgbeNetBuf { packet });
 
                 desc.set_packet_address(pool.get_phys_addr(queue.bufs_in_use[rx_index]) as u64);
                 desc.reset_status();
@@ -300,7 +283,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
 
     /// Sends a [`TxBuffer`] to the network. If currently queue is full, returns an
     /// error with type [`IxgbeError::QueueFull`].
-    fn send(&mut self, queue_id: u16, tx_buf: TxBuffer) -> IxgbeResult {
+    fn send(&mut self, queue_id: u16, tx_buf: IxgbeNetBuf) -> IxgbeResult {
         let queue = self
             .tx_queues
             .get_mut(queue_id as usize)
@@ -368,7 +351,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         Ok(())
     }
 
-    fn send_packets(&mut self, queue_id: u16, tx_bufs: &mut VecDeque<TxBuffer>) -> IxgbeResult {
+    fn send_packets(&mut self, queue_id: u16, tx_bufs: &mut VecDeque<IxgbeNetBuf>) -> IxgbeResult {
         let queue = self
             .tx_queues
             .get_mut(queue_id as usize)

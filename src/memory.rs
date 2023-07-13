@@ -134,7 +134,7 @@ impl<T, H: IxgbeHal> Dma<T, H> {
 }
 
 pub struct Packet {
-    pub(crate) addr_virt: *mut u8,
+    pub(crate) addr_virt: NonNull<u8>,
     pub(crate) addr_phys: usize,
     pub(crate) len: usize,
     pub(crate) pool: Arc<MemPool>,
@@ -154,13 +154,13 @@ impl Deref for Packet {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.addr_virt, self.len) }
+        unsafe { slice::from_raw_parts(self.addr_virt.as_ptr(), self.len) }
     }
 }
 
 impl DerefMut for Packet {
     fn deref_mut(&mut self) -> &mut [u8] {
-        unsafe { slice::from_raw_parts_mut(self.addr_virt, self.len) }
+        unsafe { slice::from_raw_parts_mut(self.addr_virt.as_ptr(), self.len) }
     }
 }
 
@@ -186,7 +186,7 @@ impl Packet {
         pool_entry: usize,
     ) -> Packet {
         Packet {
-            addr_virt,
+            addr_virt: NonNull::new_unchecked(addr_virt),
             addr_phys,
             len,
             pool,
@@ -195,7 +195,7 @@ impl Packet {
     }
     /// Returns the virtual address of the packet.
     pub fn get_virt_addr(&self) -> *mut u8 {
-        self.addr_virt
+        self.addr_virt.as_ptr()
     }
 
     /// Returns the physical address of the packet.
@@ -205,13 +205,13 @@ impl Packet {
 
     /// Returns all data in the buffer, not including header.
     pub fn as_bytes(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.addr_virt, self.len) }
+        unsafe { slice::from_raw_parts(self.addr_virt.as_ptr(), self.len) }
     }
 
     /// Returns all data in the buffer with the mutuable reference,
     /// not including header.
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
-        unsafe { slice::from_raw_parts_mut(self.addr_virt, self.len) }
+        unsafe { slice::from_raw_parts_mut(self.addr_virt.as_ptr(), self.len) }
     }
 
     /// Returns a mutable slice to the headroom of the pakcet.
@@ -223,7 +223,7 @@ impl Packet {
     /// Panics if `len` is greater than [`PACKET_HEADROOM`]
     pub fn headroom_mut(&mut self, len: usize) -> &mut [u8] {
         assert!(len <= PACKET_HEADROOM);
-        unsafe { slice::from_raw_parts_mut(self.addr_virt.sub(len), len) }
+        unsafe { slice::from_raw_parts_mut(self.addr_virt.as_ptr().sub(len), len) }
     }
 
     #[cfg(target_arch = "x86_64")]
