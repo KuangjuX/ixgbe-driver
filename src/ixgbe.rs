@@ -71,7 +71,8 @@ struct IxgbeTxQueue {
 
 impl IxgbeTxQueue {
     fn can_send(&self) -> bool {
-        true
+        let next_tx_index = wrap_ring(self.tx_index, self.num_descriptors);
+        next_tx_index != self.clean_index
     }
 }
 
@@ -148,6 +149,61 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         self.get_reg32(IXGBE_GORCH);
         self.get_reg32(IXGBE_GOTCL);
         self.get_reg32(IXGBE_GOTCH);
+    }
+
+    fn recycle_tx_buffers(&mut self, queue_id: u16) -> IxgbeResult {
+        let queue = self
+            .tx_queues
+            .get_mut(queue_id as usize)
+            .ok_or(IxgbeError::InvalidQueue)?;
+
+        let mut clean_index = queue.clean_index;
+        let cur_index = queue.tx_index;
+
+        loop {
+            let mut cleanable = cur_index as i32 - clean_index as i32;
+
+            if cleanable < 0 {
+                cleanable += queue.num_descriptors as i32;
+            }
+
+            if cleanable < TX_CLEAN_BATCH as i32 {
+                break;
+            }
+
+            let mut cleanup_to = clean_index + TX_CLEAN_BATCH - 1;
+
+            if cleanup_to >= queue.num_descriptors {
+                cleanup_to -= queue.num_descriptors;
+            }
+
+            let status = unsafe {
+                let descs = queue.descriptors[cleanup_to].as_mut();
+                descs.paylen_popts_cc_idx_sta.read()
+            };
+
+            if (status & IXGBE_ADVTXD_STAT_DD) != 0 {
+                if let Some(ref pool) = queue.pool {
+                    if TX_CLEAN_BATCH >= queue.bufs_in_use.len() {
+                        pool.free_stack
+                            .borrow_mut()
+                            .extend(queue.bufs_in_use.drain(..))
+                    } else {
+                        pool.free_stack
+                            .borrow_mut()
+                            .extend(queue.bufs_in_use.drain(..TX_CLEAN_BATCH))
+                    }
+                }
+
+                clean_index = wrap_ring(cleanup_to, queue.num_descriptors);
+            } else {
+                break;
+            }
+        }
+
+        queue.clean_index = clean_index;
+
+        Ok(())
     }
 
     /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
@@ -289,8 +345,12 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             .get_mut(queue_id as usize)
             .ok_or(IxgbeError::InvalidQueue)?;
 
+        if !queue.can_send() {
+            warn!("Queue {} is full", queue_id);
+            return Err(IxgbeError::QueueFull);
+        }
+
         let cur_index = queue.tx_index;
-        let clean_index = clean_tx_queue(queue);
 
         let packet = tx_buf.packet;
 
@@ -312,16 +372,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             "Distince memory pools for a single tx queue are not supported yet."
         );
 
-        let next_index = wrap_ring(cur_index, queue.num_descriptors);
-
-        if clean_index == next_index {
-            info!("Queue {} is full", queue_id);
-            return Err(IxgbeError::QueueFull);
-        }
-
         queue.tx_index = wrap_ring(queue.tx_index, queue.num_descriptors);
-
-        // let desc = unsafe { &mut *(queue.descriptors.add(cur_index) as *mut ixgbe_adv_tx_desc) };
 
         trace!(
             "TX phys_addr: {:#x}, virt_addr: {:#x}",
@@ -358,7 +409,6 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             .ok_or(IxgbeError::InvalidQueue)?;
 
         let mut cur_index = queue.tx_index;
-        let clean_index = clean_tx_queue(queue);
 
         if queue.pool.is_none() {
             if let Some(tx_buf) = tx_bufs.get(0) {
@@ -374,7 +424,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
 
             let next_index = wrap_ring(cur_index, queue.num_descriptors);
 
-            if clean_index == next_index {
+            if queue.clean_index == next_index {
                 // Tx queue of device is full, push packet back onto
                 // the queue of to-be-sent packets.
                 tx_bufs.push_front(tx_buf);
@@ -998,57 +1048,6 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
         ivar |= msix_vector << index;
         self.set_reg32(IXGBE_IVAR(u32::from(queue) >> 1), ivar);
     }
-}
-
-/// Removes multiples of `TX_CLEAN_BATCH` packets from `queue`.
-fn clean_tx_queue(queue: &mut IxgbeTxQueue) -> usize {
-    let mut clean_index = queue.clean_index;
-    let cur_index = queue.tx_index;
-
-    loop {
-        let mut cleanable = cur_index as i32 - clean_index as i32;
-
-        if cleanable < 0 {
-            cleanable += queue.num_descriptors as i32;
-        }
-
-        if cleanable < TX_CLEAN_BATCH as i32 {
-            break;
-        }
-
-        let mut cleanup_to = clean_index + TX_CLEAN_BATCH - 1;
-
-        if cleanup_to >= queue.num_descriptors {
-            cleanup_to -= queue.num_descriptors;
-        }
-
-        let status = unsafe {
-            let descs = queue.descriptors[cleanup_to].as_mut();
-            descs.paylen_popts_cc_idx_sta.read()
-        };
-
-        if (status & IXGBE_ADVTXD_STAT_DD) != 0 {
-            if let Some(ref pool) = queue.pool {
-                if TX_CLEAN_BATCH >= queue.bufs_in_use.len() {
-                    pool.free_stack
-                        .borrow_mut()
-                        .extend(queue.bufs_in_use.drain(..))
-                } else {
-                    pool.free_stack
-                        .borrow_mut()
-                        .extend(queue.bufs_in_use.drain(..TX_CLEAN_BATCH))
-                }
-            }
-
-            clean_index = wrap_ring(cleanup_to, queue.num_descriptors);
-        } else {
-            break;
-        }
-    }
-
-    queue.clean_index = clean_index;
-
-    clean_index
 }
 
 unsafe impl<H: IxgbeHal> Sync for IxgbeDevice<H> {}

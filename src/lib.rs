@@ -62,6 +62,9 @@ pub trait NicDevice<H: IxgbeHal> {
     /// Returns the network card's link speed.
     fn get_link_speed(&self) -> u16;
 
+    /// Pool the transmit queue for sent packets and free their buffers.
+    fn recycle_tx_buffers(&mut self, queue_id: u16) -> IxgbeResult;
+
     /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
     /// with type [`IxgbeError::NotReady`].
     ///
