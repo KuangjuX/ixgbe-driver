@@ -72,12 +72,11 @@ pub trait NicDevice<H: IxgbeHal> {
     fn receive(&mut self, queue_id: u16) -> IxgbeResult<IxgbeNetBuf>;
 
     /// Receives `packet_nums` [`RxBuffer`] from network. If currently no data, returns an error
-    /// with type [`IxgbeError::NotReady`].
-    fn receive_packets(
-        &mut self,
-        queue_id: u16,
-        packet_nums: usize,
-    ) -> IxgbeResult<Vec<IxgbeNetBuf>>;
+    /// with type [`IxgbeError::NotReady`], else returns the number of received packets. clourse `f` will
+    /// be called for avoiding too many dynamic memory allocations.
+    fn receive_packets<F>(&mut self, queue_id: u16, packet_nums: usize, f: F) -> IxgbeResult<usize>
+    where
+        F: Fn(IxgbeNetBuf);
 
     /// Sends a [`TxBuffer`] to network. If currently queue is full, returns an
     /// error with type [`IxgbeError::QueueFull`].

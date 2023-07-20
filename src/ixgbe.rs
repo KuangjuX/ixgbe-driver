@@ -268,12 +268,11 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         Err(IxgbeError::NoMemory)
     }
 
-    fn receive_packets(
-        &mut self,
-        queue_id: u16,
-        packet_nums: usize,
-    ) -> IxgbeResult<Vec<IxgbeNetBuf>> {
-        let mut rx_bufs = Vec::new();
+    fn receive_packets<F>(&mut self, queue_id: u16, packet_nums: usize, f: F) -> IxgbeResult<usize>
+    where
+        F: Fn(IxgbeNetBuf),
+    {
+        let mut recv_nums = 0;
         let queue = self
             .rx_queues
             .get_mut(queue_id as usize)
@@ -304,20 +303,26 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             if let Some(buf) = pool.alloc_buf() {
                 let idx = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
 
-                let packet = unsafe {
-                    Packet::new(
-                        pool.get_virt_addr(idx),
-                        pool.get_phys_addr(idx),
-                        desc.length() as usize,
-                        pool.clone(),
-                        idx,
-                    )
+                let rx_buf = IxgbeNetBuf {
+                    packet: unsafe {
+                        Packet::new(
+                            pool.get_virt_addr(idx),
+                            pool.get_phys_addr(idx),
+                            desc.length() as usize,
+                            pool.clone(),
+                            idx,
+                        )
+                    },
                 };
 
+                // Prefetch cache line for next packet.
                 #[cfg(target_arch = "x86_64")]
                 packet.prefrtch(crate::memory::Prefetch::Time0);
 
-                rx_bufs.push(IxgbeNetBuf { packet });
+                // Call closure to avoid too many dynamic memory allocations, handle
+                // by caller.
+                f(rx_buf);
+                recv_nums += 1;
 
                 desc.set_packet_address(pool.get_phys_addr(queue.bufs_in_use[rx_index]) as u64);
                 desc.reset_status();
@@ -325,6 +330,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
                 last_rx_index = rx_index;
                 rx_index = wrap_ring(rx_index, queue.num_descriptors);
             } else {
+                error!("Ixgbe alloc buffer failed: No Memory!");
                 break;
             }
         }
@@ -334,7 +340,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             self.rx_queues[queue_id as usize].rx_index = rx_index;
         }
 
-        Ok(rx_bufs)
+        Ok(recv_nums)
     }
 
     /// Sends a [`TxBuffer`] to the network. If currently queue is full, returns an
