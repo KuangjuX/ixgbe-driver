@@ -16,7 +16,7 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::collections::VecDeque;
 pub use hal::{BufferDirection, IxgbeHal};
 pub use ixgbe::{IxgbeDevice, IxgbeNetBuf};
 
@@ -76,7 +76,7 @@ pub trait NicDevice<H: IxgbeHal> {
     /// be called for avoiding too many dynamic memory allocations.
     fn receive_packets<F>(&mut self, queue_id: u16, packet_nums: usize, f: F) -> IxgbeResult<usize>
     where
-        F: Fn(IxgbeNetBuf);
+        F: FnMut(IxgbeNetBuf);
 
     /// Sends a [`TxBuffer`] to network. If currently queue is full, returns an
     /// error with type [`IxgbeError::QueueFull`].

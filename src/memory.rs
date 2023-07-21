@@ -82,7 +82,12 @@ impl MemPool {
     pub(crate) fn free_buf(&self, id: usize) {
         assert!(id < self.num_entries, "buffer outside of memory pool");
 
-        self.free_stack.borrow_mut().push(id);
+        let mut free_stack = self.free_stack.borrow_mut();
+        if free_stack.iter().any(|&x| x == id) {
+            panic!("free buf: buffer already free");
+        }
+
+        free_stack.push(id);
     }
 
     /// Return entry size.

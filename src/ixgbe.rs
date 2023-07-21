@@ -1,6 +1,6 @@
 use crate::descriptor::{AdvancedRxDescriptor, AdvancedTxDescriptor, RX_STATUS_DD, RX_STATUS_EOP};
 use crate::interrupts::Interrupts;
-use crate::memory::{alloc_pkt, Dma, MemPool, Packet};
+use crate::memory::{alloc_pkt, Dma, MemPool, Packet, PACKET_HEADROOM};
 use crate::NicDevice;
 use crate::{constants::*, hal::IxgbeHal};
 use crate::{IxgbeError, IxgbeResult};
@@ -104,6 +104,25 @@ impl IxgbeNetBuf {
     /// Returns the length of the packet.
     pub fn packet_len(&self) -> usize {
         self.packet.len
+    }
+
+    /// Returns the entry id of the packet.
+    pub fn pool_entry(&self) -> usize {
+        self.packet.pool_entry
+    }
+
+    /// Construct a [`IxgbeNetBuf`] from specified pool entry and pool.
+    pub fn construct(pool_entry: usize, pool: &Arc<MemPool>, len: usize) -> IxgbeResult<Self> {
+        let pkt = unsafe {
+            Packet::new(
+                pool.get_virt_addr(pool_entry).add(PACKET_HEADROOM),
+                pool.get_phys_addr(pool_entry) + PACKET_HEADROOM,
+                len,
+                Arc::clone(pool),
+                pool_entry,
+            )
+        };
+        Ok(Self { packet: pkt })
     }
 }
 
@@ -268,9 +287,14 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         Err(IxgbeError::NoMemory)
     }
 
-    fn receive_packets<F>(&mut self, queue_id: u16, packet_nums: usize, f: F) -> IxgbeResult<usize>
+    fn receive_packets<F>(
+        &mut self,
+        queue_id: u16,
+        packet_nums: usize,
+        mut f: F,
+    ) -> IxgbeResult<usize>
     where
-        F: Fn(IxgbeNetBuf),
+        F: FnMut(IxgbeNetBuf),
     {
         let mut recv_nums = 0;
         let queue = self
@@ -303,21 +327,20 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
             if let Some(buf) = pool.alloc_buf() {
                 let idx = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
 
-                let rx_buf = IxgbeNetBuf {
-                    packet: unsafe {
-                        Packet::new(
-                            pool.get_virt_addr(idx),
-                            pool.get_phys_addr(idx),
-                            desc.length() as usize,
-                            pool.clone(),
-                            idx,
-                        )
-                    },
+                let packet = unsafe {
+                    Packet::new(
+                        pool.get_virt_addr(idx),
+                        pool.get_phys_addr(idx),
+                        desc.length() as usize,
+                        pool.clone(),
+                        idx,
+                    )
                 };
-
                 // Prefetch cache line for next packet.
                 #[cfg(target_arch = "x86_64")]
                 packet.prefrtch(crate::memory::Prefetch::Time0);
+
+                let rx_buf = IxgbeNetBuf { packet };
 
                 // Call closure to avoid too many dynamic memory allocations, handle
                 // by caller.
