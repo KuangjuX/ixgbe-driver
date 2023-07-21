@@ -106,7 +106,7 @@ impl IxgbeNetBuf {
         self.packet.len
     }
 
-    /// Returns the entry id of the packet.
+    /// Returns the entry of the packet.
     pub fn pool_entry(&self) -> usize {
         self.packet.pool_entry
     }
@@ -225,67 +225,67 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         Ok(())
     }
 
-    /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
-    /// with type [`IxgbeError::NotReady`].
-    ///
-    /// It will try to pop a buffer that completed data reception in the NIC queue.
-    fn receive(&mut self, queue_id: u16) -> IxgbeResult<IxgbeNetBuf> {
-        // 1. Get received queue.
+    // /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
+    // /// with type [`IxgbeError::NotReady`].
+    // ///
+    // /// It will try to pop a buffer that completed data reception in the NIC queue.
+    // fn receive(&mut self, queue_id: u16) -> IxgbeResult<IxgbeNetBuf> {
+    //     // 1. Get received queue.
 
-        let queue = self
-            .rx_queues
-            .get_mut(queue_id as usize)
-            .ok_or(IxgbeError::InvalidQueue)?;
+    //     let queue = self
+    //         .rx_queues
+    //         .get_mut(queue_id as usize)
+    //         .ok_or(IxgbeError::InvalidQueue)?;
 
-        // Can't receive, return [`IxgbeError::NotReady`]
-        if !queue.can_recv() {
-            return Err(IxgbeError::NotReady);
-        }
+    //     // Can't receive, return [`IxgbeError::NotReady`]
+    //     if !queue.can_recv() {
+    //         return Err(IxgbeError::NotReady);
+    //     }
 
-        let mut rx_index = queue.rx_index;
-        let last_rx_index = queue.rx_index;
+    //     let mut rx_index = queue.rx_index;
+    //     let last_rx_index = queue.rx_index;
 
-        // 2. pop a packet from the queue.
-        // Read ixgbe descriptor.
-        let desc = unsafe { queue.descriptors[rx_index].as_mut() };
-        let status = desc.get_ext_status() as u8;
+    //     // 2. pop a packet from the queue.
+    //     // Read ixgbe descriptor.
+    //     let desc = unsafe { queue.descriptors[rx_index].as_mut() };
+    //     let status = desc.get_ext_status() as u8;
 
-        if (status & RX_STATUS_EOP) == 0 {
-            panic!("Increase buffer size or decrease MTU")
-        }
+    //     if (status & RX_STATUS_EOP) == 0 {
+    //         panic!("Increase buffer size or decrease MTU")
+    //     }
 
-        let pool = &queue.pool;
-        // Get a free buffer from the mempool
-        if let Some(buf) = pool.alloc_buf() {
-            // replace currently used buffer with new buffer.
-            let idx = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
-            let packet = unsafe {
-                Packet::new(
-                    pool.get_virt_addr(idx),
-                    pool.get_phys_addr(idx),
-                    desc.length() as usize,
-                    pool.clone(),
-                    idx,
-                )
-            };
+    //     let pool = &queue.pool;
+    //     // Get a free buffer from the mempool
+    //     if let Some(buf) = pool.alloc_buf() {
+    //         // replace currently used buffer with new buffer.
+    //         let idx = mem::replace(&mut queue.bufs_in_use[rx_index], buf);
+    //         let packet = unsafe {
+    //             Packet::new(
+    //                 pool.get_virt_addr(idx),
+    //                 pool.get_phys_addr(idx),
+    //                 desc.length() as usize,
+    //                 pool.clone(),
+    //                 idx,
+    //             )
+    //         };
 
-            desc.set_packet_address(pool.get_phys_addr(queue.bufs_in_use[rx_index]) as u64);
-            desc.reset_status();
+    //         desc.set_packet_address(pool.get_phys_addr(queue.bufs_in_use[rx_index]) as u64);
+    //         desc.reset_status();
 
-            rx_index = wrap_ring(rx_index, queue.num_descriptors);
+    //         rx_index = wrap_ring(rx_index, queue.num_descriptors);
 
-            self.set_reg32(IXGBE_VFRDT(u32::from(queue_id)), last_rx_index as u32);
-            self.rx_queues[queue_id as usize].rx_index = rx_index;
+    //         self.set_reg32(IXGBE_VFRDT(u32::from(queue_id)), last_rx_index as u32);
+    //         self.rx_queues[queue_id as usize].rx_index = rx_index;
 
-            trace!(
-                "[ixgbe-driver] RECV PACKET: {}",
-                PrettyPrinter::<EthernetFrame<&[u8]>>::new("", &packet.as_bytes())
-            );
+    //         trace!(
+    //             "[ixgbe-driver] RECV PACKET: {}",
+    //             PrettyPrinter::<EthernetFrame<&[u8]>>::new("", &packet.as_bytes())
+    //         );
 
-            return Ok(IxgbeNetBuf { packet });
-        }
-        Err(IxgbeError::NoMemory)
-    }
+    //         return Ok(IxgbeNetBuf { packet });
+    //     }
+    //     Err(IxgbeError::NoMemory)
+    // }
 
     fn receive_packets<F>(
         &mut self,
@@ -431,58 +431,58 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
         Ok(())
     }
 
-    fn send_packets(&mut self, queue_id: u16, tx_bufs: &mut VecDeque<IxgbeNetBuf>) -> IxgbeResult {
-        let queue = self
-            .tx_queues
-            .get_mut(queue_id as usize)
-            .ok_or(IxgbeError::InvalidQueue)?;
+    // fn send_packets(&mut self, queue_id: u16, tx_bufs: &mut VecDeque<IxgbeNetBuf>) -> IxgbeResult {
+    //     let queue = self
+    //         .tx_queues
+    //         .get_mut(queue_id as usize)
+    //         .ok_or(IxgbeError::InvalidQueue)?;
 
-        let mut cur_index = queue.tx_index;
+    //     let mut cur_index = queue.tx_index;
 
-        if queue.pool.is_none() {
-            if let Some(tx_buf) = tx_bufs.get(0) {
-                queue.pool = Some(tx_buf.packet.pool.clone())
-            }
-        }
+    //     if queue.pool.is_none() {
+    //         if let Some(tx_buf) = tx_bufs.get(0) {
+    //             queue.pool = Some(tx_buf.packet.pool.clone())
+    //         }
+    //     }
 
-        while let Some(tx_buf) = tx_bufs.pop_front() {
-            assert!(
-                Arc::ptr_eq(queue.pool.as_ref().unwrap(), &tx_buf.packet.pool),
-                "Distinct memory pools for a single tx queue are not supported yet."
-            );
+    //     while let Some(tx_buf) = tx_bufs.pop_front() {
+    //         assert!(
+    //             Arc::ptr_eq(queue.pool.as_ref().unwrap(), &tx_buf.packet.pool),
+    //             "Distinct memory pools for a single tx queue are not supported yet."
+    //         );
 
-            let next_index = wrap_ring(cur_index, queue.num_descriptors);
+    //         let next_index = wrap_ring(cur_index, queue.num_descriptors);
 
-            if queue.clean_index == next_index {
-                // Tx queue of device is full, push packet back onto
-                // the queue of to-be-sent packets.
-                tx_bufs.push_front(tx_buf);
-                break;
-            }
+    //         if queue.clean_index == next_index {
+    //             // Tx queue of device is full, push packet back onto
+    //             // the queue of to-be-sent packets.
+    //             tx_bufs.push_front(tx_buf);
+    //             break;
+    //         }
 
-            queue.tx_index = wrap_ring(queue.tx_index, queue.num_descriptors);
+    //         queue.tx_index = wrap_ring(queue.tx_index, queue.num_descriptors);
 
-            unsafe {
-                let desc = queue.descriptors[cur_index].as_mut();
-                desc.send(
-                    tx_buf.packet.get_phys_addr() as u64,
-                    tx_buf.packet.len() as u16,
-                );
-            }
+    //         unsafe {
+    //             let desc = queue.descriptors[cur_index].as_mut();
+    //             desc.send(
+    //                 tx_buf.packet.get_phys_addr() as u64,
+    //                 tx_buf.packet.len() as u16,
+    //             );
+    //         }
 
-            queue.bufs_in_use.push_back(tx_buf.packet.pool_entry);
-            mem::forget(tx_buf);
+    //         queue.bufs_in_use.push_back(tx_buf.packet.pool_entry);
+    //         mem::forget(tx_buf);
 
-            cur_index = next_index;
-        }
+    //         cur_index = next_index;
+    //     }
 
-        self.set_reg32(
-            IXGBE_TDT(u32::from(queue_id)),
-            self.tx_queues[queue_id as usize].tx_index as u32,
-        );
+    //     self.set_reg32(
+    //         IXGBE_TDT(u32::from(queue_id)),
+    //         self.tx_queues[queue_id as usize].tx_index as u32,
+    //     );
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     /// Whether can receiver packet.
     fn can_receive(&self, queue_id: u16) -> IxgbeResult<bool> {
@@ -549,6 +549,11 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
 
 // Private methods implementation
 impl<H: IxgbeHal> IxgbeDevice<H> {
+    /// Get the memory pool.
+    pub fn pool(&self, queue_id: u16) -> Arc<MemPool> {
+        self.rx_queues[queue_id as usize].pool.clone()
+    }
+
     /// Resets and initializes the device.
     fn reset_and_init(&mut self) -> IxgbeResult {
         info!("resetting device ixgbe device");

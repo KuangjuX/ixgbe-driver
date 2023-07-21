@@ -80,7 +80,11 @@ impl MemPool {
 
     /// Marks a buffer in the memory pool as free.
     pub(crate) fn free_buf(&self, id: usize) {
-        assert!(id < self.num_entries, "buffer outside of memory pool");
+        assert!(
+            id < self.num_entries,
+            "buffer outside of memory pool, id: {}",
+            id
+        );
 
         let mut free_stack = self.free_stack.borrow_mut();
         if free_stack.iter().any(|&x| x == id) {
@@ -97,7 +101,11 @@ impl MemPool {
 
     /// Returns the virtual address of a buffer from the memory pool.
     pub(crate) fn get_virt_addr(&self, id: usize) -> *mut u8 {
-        assert!(id < self.num_entries, "buffer outside of memory pool");
+        assert!(
+            id < self.num_entries,
+            "buffer outside of memory pool, id: {}",
+            id
+        );
 
         unsafe { self.base_addr.add(id * self.entry_size) }
     }

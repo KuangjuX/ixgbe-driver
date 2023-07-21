@@ -16,7 +16,6 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use alloc::collections::VecDeque;
 pub use hal::{BufferDirection, IxgbeHal};
 pub use ixgbe::{IxgbeDevice, IxgbeNetBuf};
 
@@ -65,11 +64,11 @@ pub trait NicDevice<H: IxgbeHal> {
     /// Pool the transmit queue for sent packets and free their buffers.
     fn recycle_tx_buffers(&mut self, queue_id: u16) -> IxgbeResult;
 
-    /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
-    /// with type [`IxgbeError::NotReady`].
-    ///
-    /// It will try to pop a buffer that completed data reception in the NIC queue.
-    fn receive(&mut self, queue_id: u16) -> IxgbeResult<IxgbeNetBuf>;
+    // /// Receives a [`RxBuffer`] from network. If currently no data, returns an error
+    // /// with type [`IxgbeError::NotReady`].
+    // ///
+    // /// It will try to pop a buffer that completed data reception in the NIC queue.
+    // fn receive(&mut self, queue_id: u16) -> IxgbeResult<IxgbeNetBuf>;
 
     /// Receives `packet_nums` [`RxBuffer`] from network. If currently no data, returns an error
     /// with type [`IxgbeError::NotReady`], else returns the number of received packets. clourse `f` will
@@ -82,9 +81,9 @@ pub trait NicDevice<H: IxgbeHal> {
     /// error with type [`IxgbeError::QueueFull`].
     fn send(&mut self, queue_id: u16, tx_buf: IxgbeNetBuf) -> IxgbeResult;
 
-    /// Sends `packet_nums` [`TxBuffer`] to network. If currently queue is full, returns an
-    /// error with type [`IxgbeError::QueueFull`].
-    fn send_packets(&mut self, queue_id: u16, tx_bufs: &mut VecDeque<IxgbeNetBuf>) -> IxgbeResult;
+    // /// Sends `packet_nums` [`TxBuffer`] to network. If currently queue is full, returns an
+    // /// error with type [`IxgbeError::QueueFull`].
+    // fn send_packets(&mut self, queue_id: u16, tx_bufs: &mut VecDeque<IxgbeNetBuf>) -> IxgbeResult;
 
     /// Whether can receive packet.
     fn can_receive(&self, queue_id: u16) -> IxgbeResult<bool>;
