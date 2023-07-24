@@ -16,7 +16,7 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-pub use hal::{BufferDirection, IxgbeHal};
+pub use hal::IxgbeHal;
 pub use ixgbe::{IxgbeDevice, IxgbeNetBuf};
 
 pub use memory::{alloc_pkt, MemPool, PhysAddr};

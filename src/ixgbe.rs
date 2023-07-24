@@ -863,15 +863,10 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
         #[cfg(target_arch = "x86_64")]
         {
             info!("waiting for link");
-            // get the current time in seconds
-            let time = unsafe { core::arch::x86_64::_rdtsc() / H::get_tsc_frequency() };
+            let _ = H::wait_until(Duration::from_secs(10));
             let mut speed = self.get_link_speed();
-            while speed == 0
-                && unsafe { core::arch::x86_64::_rdtsc() / H::get_tsc_frequency() - time } < 10
-            {
-                // thread::sleep(Duration::from_millis(100));
-                core::hint::spin_loop();
-                // let _ = H::wait_ms(100);
+            while speed == 0 {
+                let _ = H::wait_until(Duration::from_millis(100));
                 speed = self.get_link_speed();
             }
             info!("link speed is {} Mbit/s", self.get_link_speed());
@@ -943,8 +938,6 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
             if (current & value) == value {
                 break;
             }
-            // `thread::sleep(Duration::from_millis(100));`
-            // let _ = H::wait_ms(100);
             let _ = H::wait_until(Duration::from_millis(100));
         }
     }
