@@ -38,9 +38,9 @@ pub enum IxgbeError {
     NoMemory,
     /// Allocated page not aligned.
     PageNotAligned,
-    /// The device is not ready
+    /// The device is not ready.
     NotReady,
-    /// Invalid `queue_id`
+    /// Invalid `queue_id`.
     InvalidQueue,
 }
 

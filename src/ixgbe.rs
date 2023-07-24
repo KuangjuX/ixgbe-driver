@@ -20,8 +20,8 @@ const MAX_QUEUES: u16 = 64;
 const PKT_BUF_ENTRY_SIZE: usize = 2048;
 const MIN_MEMPOOL_SIZE: usize = 4096;
 
-const NUM_RX_QUEUE_ENTRIES: usize = 1024;
-const NUM_TX_QUEUE_ENTRIES: usize = 1024;
+// const NUM_RX_QUEUE_ENTRIES: usize = 1024;
+// const NUM_TX_QUEUE_ENTRIES: usize = 1024;
 const TX_CLEAN_BATCH: usize = 32;
 
 fn wrap_ring(index: usize, ring_size: usize) -> usize {
@@ -29,7 +29,7 @@ fn wrap_ring(index: usize, ring_size: usize) -> usize {
 }
 
 /// Ixgbe device.
-pub struct IxgbeDevice<H: IxgbeHal> {
+pub struct IxgbeDevice<H: IxgbeHal, const QS: usize> {
     addr: *mut u8,
     len: usize,
     num_rx_queues: u16,
@@ -124,7 +124,7 @@ impl IxgbeNetBuf {
     }
 }
 
-impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
+impl<H: IxgbeHal, const QS: usize> NicDevice<H> for IxgbeDevice<H, QS> {
     fn get_driver_name(&self) -> &str {
         DRIVER_NAME
     }
@@ -386,7 +386,7 @@ impl<H: IxgbeHal> NicDevice<H> for IxgbeDevice<H> {
     }
 }
 
-impl<H: IxgbeHal> IxgbeDevice<H> {
+impl<H: IxgbeHal, const QS: usize> IxgbeDevice<H, QS> {
     /// Returns an initialized `IxgbeDevice` on success.
     ///
     /// # Panics
@@ -432,7 +432,7 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
 }
 
 // Private methods implementation
-impl<H: IxgbeHal> IxgbeDevice<H> {
+impl<H: IxgbeHal, const QS: usize> IxgbeDevice<H, QS> {
     /// Resets and initializes the device.
     fn reset_and_init(&mut self, pool: &Arc<MemPool>) -> IxgbeResult {
         info!("resetting device ixgbe device");
@@ -529,15 +529,14 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
 
             assert_eq!(mem::size_of::<AdvancedTxDescriptor>(), 16);
             // section 7.1.9 - setup descriptor ring
-            let ring_size_bytes = NUM_RX_QUEUE_ENTRIES * mem::size_of::<AdvancedRxDescriptor>();
+            let ring_size_bytes = QS * mem::size_of::<AdvancedRxDescriptor>();
             let dma: Dma<AdvancedRxDescriptor, H> = Dma::allocate(ring_size_bytes, true)?;
 
             // initialize to 0xff to prevent rogue memory accesses on premature dma activation
-            let mut descriptors: [NonNull<AdvancedRxDescriptor>; NUM_RX_QUEUE_ENTRIES] =
-                [NonNull::dangling(); NUM_RX_QUEUE_ENTRIES];
+            let mut descriptors: [NonNull<AdvancedRxDescriptor>; QS] = [NonNull::dangling(); QS];
 
             unsafe {
-                for desc_id in 0..NUM_RX_QUEUE_ENTRIES {
+                for desc_id in 0..QS {
                     descriptors[desc_id] = NonNull::new(dma.virt.add(desc_id)).unwrap();
                     descriptors[desc_id].as_mut().init();
                 }
@@ -568,9 +567,9 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
             let rx_queue = IxgbeRxQueue {
                 descriptors: Box::new(descriptors),
                 pool: Arc::clone(pool),
-                num_descriptors: NUM_RX_QUEUE_ENTRIES,
+                num_descriptors: QS,
                 rx_index: 0,
-                bufs_in_use: Vec::with_capacity(NUM_RX_QUEUE_ENTRIES),
+                bufs_in_use: Vec::with_capacity(QS),
             };
 
             self.rx_queues.push(rx_queue);
@@ -612,15 +611,14 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
             info!("initializing tx queue {}", i);
             // section 7.1.9 - setup descriptor ring
             assert_eq!(mem::size_of::<AdvancedTxDescriptor>(), 16);
-            let ring_size_bytes = NUM_TX_QUEUE_ENTRIES * mem::size_of::<AdvancedTxDescriptor>();
+            let ring_size_bytes = QS * mem::size_of::<AdvancedTxDescriptor>();
 
             let dma: Dma<AdvancedTxDescriptor, H> = Dma::allocate(ring_size_bytes, true)?;
 
-            let mut descriptors: [NonNull<AdvancedTxDescriptor>; NUM_TX_QUEUE_ENTRIES] =
-                [NonNull::dangling(); NUM_TX_QUEUE_ENTRIES];
+            let mut descriptors: [NonNull<AdvancedTxDescriptor>; QS] = [NonNull::dangling(); QS];
 
             unsafe {
-                for desc_id in 0..NUM_TX_QUEUE_ENTRIES {
+                for desc_id in 0..QS {
                     descriptors[desc_id] = NonNull::new(dma.virt.add(desc_id)).unwrap();
                     descriptors[desc_id].as_mut().init();
                 }
@@ -649,9 +647,9 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
 
             let tx_queue = IxgbeTxQueue {
                 descriptors: Box::new(descriptors),
-                bufs_in_use: VecDeque::with_capacity(NUM_TX_QUEUE_ENTRIES),
+                bufs_in_use: VecDeque::with_capacity(QS),
                 pool: None,
-                num_descriptors: NUM_TX_QUEUE_ENTRIES,
+                num_descriptors: QS,
                 clean_index: 0,
                 tx_index: 0,
             };
@@ -956,5 +954,5 @@ impl<H: IxgbeHal> IxgbeDevice<H> {
     }
 }
 
-unsafe impl<H: IxgbeHal> Sync for IxgbeDevice<H> {}
-unsafe impl<H: IxgbeHal> Send for IxgbeDevice<H> {}
+unsafe impl<H: IxgbeHal, const QS: usize> Sync for IxgbeDevice<H, QS> {}
+unsafe impl<H: IxgbeHal, const QS: usize> Send for IxgbeDevice<H, QS> {}
