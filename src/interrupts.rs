@@ -1,5 +1,9 @@
 use alloc::vec::Vec;
 
+/// The number of msi-x vectors this device can have.
+/// It can be set from PCI space, but we took the value from the data sheet.
+pub const IXGBE_MAX_MSIX_VECTORS: usize = 64;
+
 #[derive(Default)]
 pub struct Interrupts {
     pub interrupts_enabled: bool,     // Interrupts for this device enabled?

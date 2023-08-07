@@ -406,6 +406,13 @@ impl<H: IxgbeHal, const QS: usize> IxgbeDevice<H, QS> {
         let rx_queues = Vec::with_capacity(num_rx_queues as usize);
         let tx_queues = Vec::with_capacity(num_tx_queues as usize);
 
+        let mut interrupts = Interrupts::default();
+        #[cfg(feature = "irq")]
+        {
+            interrupts.interrupts_enabled = true;
+            interrupts.itr_rate = 1; // 2us
+        }
+
         let mut dev = IxgbeDevice {
             addr: base as *mut u8,
             len,
@@ -413,7 +420,7 @@ impl<H: IxgbeHal, const QS: usize> IxgbeDevice<H, QS> {
             num_tx_queues,
             rx_queues,
             tx_queues,
-            interrupts: Interrupts::default(),
+            interrupts,
             _marker: PhantomData,
         };
         dev.reset_and_init(pool)?;
@@ -428,6 +435,87 @@ impl<H: IxgbeHal, const QS: usize> IxgbeDevice<H, QS> {
     /// Returns the number of transmit queues.
     pub fn num_tx_queues(&self) -> u16 {
         self.num_tx_queues
+    }
+
+    #[cfg(feature = "irq")]
+    /// Enable MSI interrupt for queue with `queue_id`.
+    pub fn enable_msi_interrupt(&self, queue_id: u16) {
+        // Step 1: The software driver associates between Tx and Rx interrupt causes and the EICR
+        // register by setting the IVAR[n] registers.
+        self.set_ivar(0, queue_id, 0);
+
+        // Step 2: Program SRRCTL[n].RDMTS (per receive queue) if software uses the receive
+        // descriptor minimum threshold interrupt
+        // We don't use the minimum threshold interrupt
+
+        // Step 3: All interrupts should be set to 0b (no auto clear in the EIAC register). Following an
+        // interrupt, software might read the EICR register to check for the interrupt causes.
+        self.set_reg32(IXGBE_EIAC, 0x0000_0000);
+
+        // Step 4: Set the auto mask in the EIAM register according to the preferred mode of operation.
+        // In our case we prefer to not auto-mask the interrupts
+
+        // Step 5: Set the interrupt throttling in EITR[n] and GPIE according to the preferred mode of operation.
+        self.set_reg32(IXGBE_EITR(u32::from(queue_id)), self.interrupts.itr_rate);
+
+        // Step 6: Software clears EICR by writing all ones to clear old interrupt causes
+        self.clear_interrupts();
+
+        // Step 7: Software enables the required interrupt causes by setting the EIMS register
+        let mut mask: u32 = self.get_reg32(IXGBE_EIMS);
+        mask |= 1 << queue_id;
+        self.set_reg32(IXGBE_EIMS, mask);
+        debug!("Using MSI interrupts");
+    }
+
+    #[cfg(feature = "irq")]
+    /// Enable MSI-X interrupt for queue with `queue_id`.
+    pub fn enable_msix_interrupt(&self, queue_id: u16) {
+        // Step 1: The software driver associates between interrupt causes and MSI-X vectors and the
+        // throttling timers EITR[n] by programming the IVAR[n] and IVAR_MISC registers.
+        let mut gpie: u32 = self.get_reg32(IXGBE_GPIE);
+        gpie |= IXGBE_GPIE_MSIX_MODE | IXGBE_GPIE_PBA_SUPPORT | IXGBE_GPIE_EIAME;
+        self.set_reg32(IXGBE_GPIE, gpie);
+
+        // Set IVAR reg to enable interrupst for different queues.
+        self.set_ivar(0, queue_id, u32::from(queue_id));
+
+        // Step 2: Program SRRCTL[n].RDMTS (per receive queue) if software uses the receive
+        // descriptor minimum threshold interrupt
+        // We don't use the minimum threshold interrupt
+
+        // Step 3: The EIAC[n] registers should be set to auto clear for transmit and receive interrupt
+        // causes (for best performance). The EIAC bits that control the other and TCP timer
+        // interrupt causes should be set to 0b (no auto clear).
+        self.set_reg32(IXGBE_EIAC, IXGBE_EIMS_RTX_QUEUE);
+
+        // Step 4: Set the auto mask in the EIAM register according to the preferred mode of operation.
+        // In our case we prefer to not auto-mask the interrupts
+
+        // Step 5: Set the interrupt throttling in EITR[n] and GPIE according to the preferred mode of operation.
+        // 0x000 (0us) => ... INT/s
+        // 0x008 (2us) => 488200 INT/s
+        // 0x010 (4us) => 244000 INT/s
+        // 0x028 (10us) => 97600 INT/s
+        // 0x0C8 (50us) => 20000 INT/s
+        // 0x190 (100us) => 9766 INT/s
+        // 0x320 (200us) => 4880 INT/s
+        // 0x4B0 (300us) => 3255 INT/s
+        // 0x640 (400us) => 2441 INT/s
+        // 0x7D0 (500us) => 2000 INT/s
+        // 0x960 (600us) => 1630 INT/s
+        // 0xAF0 (700us) => 1400 INT/s
+        // 0xC80 (800us) => 1220 INT/s
+        // 0xE10 (900us) => 1080 INT/s
+        // 0xFA7 (1000us) => 980 INT/s
+        // 0xFFF (1024us) => 950 INT/s
+        self.set_reg32(IXGBE_EITR(u32::from(queue_id)), self.interrupts.itr_rate);
+
+        // Step 6: Software enables the required interrupt causes by setting the EIMS register
+        let mut mask: u32 = self.get_reg32(IXGBE_EIMS);
+        mask |= 1 << queue_id;
+        self.set_reg32(IXGBE_EIMS, mask);
+        debug!("Using MSIX interrupts");
     }
 }
 
@@ -555,14 +643,6 @@ impl<H: IxgbeHal, const QS: usize> IxgbeDevice<H, QS> {
             // set ring to empty at start
             self.set_reg32(IXGBE_RDH(u32::from(i)), 0);
             self.set_reg32(IXGBE_RDT(u32::from(i)), 0);
-
-            // let mempool_size = if NUM_RX_QUEUE_ENTRIES + NUM_TX_QUEUE_ENTRIES < MIN_MEMPOOL_SIZE {
-            //     MIN_MEMPOOL_SIZE
-            // } else {
-            //     NUM_RX_QUEUE_ENTRIES + NUM_TX_QUEUE_ENTRIES
-            // };
-
-            // let mempool = MemPool::allocate::<H>(mempool_size, PKT_BUF_ENTRY_SIZE).unwrap();
 
             let rx_queue = IxgbeRxQueue {
                 descriptors: Box::new(descriptors),
@@ -777,83 +857,6 @@ impl<H: IxgbeHal, const QS: usize> IxgbeDevice<H, QS> {
         // Clear interrupt mask
         self.set_reg32(IXGBE_EIMC, IXGBE_IRQ_CLEAR_MASK);
         self.get_reg32(IXGBE_EICR);
-    }
-
-    /// Enable MSI interrupt for queue with `queue_id`.
-    fn enable_msi_interrupt(&self, queue_id: u16) {
-        // Step 1: The software driver associates between Tx and Rx interrupt causes and the EICR
-        // register by setting the IVAR[n] registers.
-        self.set_ivar(0, queue_id, 0);
-
-        // Step 2: Program SRRCTL[n].RDMTS (per receive queue) if software uses the receive
-        // descriptor minimum threshold interrupt
-        // We don't use the minimum threshold interrupt
-
-        // Step 3: All interrupts should be set to 0b (no auto clear in the EIAC register). Following an
-        // interrupt, software might read the EICR register to check for the interrupt causes.
-        self.set_reg32(IXGBE_EIAC, 0x0000_0000);
-
-        // Step 4: Set the auto mask in the EIAM register according to the preferred mode of operation.
-        // In our case we prefer to not auto-mask the interrupts
-
-        // Step 5: Set the interrupt throttling in EITR[n] and GPIE according to the preferred mode of operation.
-        self.set_reg32(IXGBE_EITR(u32::from(queue_id)), self.interrupts.itr_rate);
-
-        // Step 6: Software clears EICR by writing all ones to clear old interrupt causes
-        self.clear_interrupts();
-
-        // Step 7: Software enables the required interrupt causes by setting the EIMS register
-        let mut mask: u32 = self.get_reg32(IXGBE_EIMS);
-        mask |= 1 << queue_id;
-        self.set_reg32(IXGBE_EIMS, mask);
-        debug!("Using MSI interrupts");
-    }
-
-    /// Enable MSI-X interrupt for queue with `queue_id`.
-    fn enable_msix_interrupt(&self, queue_id: u16) {
-        // Step 1: The software driver associates between interrupt causes and MSI-X vectors and the
-        //throttling timers EITR[n] by programming the IVAR[n] and IVAR_MISC registers.
-        let mut gpie: u32 = self.get_reg32(IXGBE_GPIE);
-        gpie |= IXGBE_GPIE_MSIX_MODE | IXGBE_GPIE_PBA_SUPPORT | IXGBE_GPIE_EIAME;
-        self.set_reg32(IXGBE_GPIE, gpie);
-        self.set_ivar(0, queue_id, u32::from(queue_id));
-
-        // Step 2: Program SRRCTL[n].RDMTS (per receive queue) if software uses the receive
-        // descriptor minimum threshold interrupt
-        // We don't use the minimum threshold interrupt
-
-        // Step 3: The EIAC[n] registers should be set to auto clear for transmit and receive interrupt
-        // causes (for best performance). The EIAC bits that control the other and TCP timer
-        // interrupt causes should be set to 0b (no auto clear).
-        self.set_reg32(IXGBE_EIAC, IXGBE_EIMS_RTX_QUEUE);
-
-        // Step 4: Set the auto mask in the EIAM register according to the preferred mode of operation.
-        // In our case we prefer to not auto-mask the interrupts
-
-        // Step 5: Set the interrupt throttling in EITR[n] and GPIE according to the preferred mode of operation.
-        // 0x000 (0us) => ... INT/s
-        // 0x008 (2us) => 488200 INT/s
-        // 0x010 (4us) => 244000 INT/s
-        // 0x028 (10us) => 97600 INT/s
-        // 0x0C8 (50us) => 20000 INT/s
-        // 0x190 (100us) => 9766 INT/s
-        // 0x320 (200us) => 4880 INT/s
-        // 0x4B0 (300us) => 3255 INT/s
-        // 0x640 (400us) => 2441 INT/s
-        // 0x7D0 (500us) => 2000 INT/s
-        // 0x960 (600us) => 1630 INT/s
-        // 0xAF0 (700us) => 1400 INT/s
-        // 0xC80 (800us) => 1220 INT/s
-        // 0xE10 (900us) => 1080 INT/s
-        // 0xFA7 (1000us) => 980 INT/s
-        // 0xFFF (1024us) => 950 INT/s
-        self.set_reg32(IXGBE_EITR(u32::from(queue_id)), self.interrupts.itr_rate);
-
-        // Step 6: Software enables the required interrupt causes by setting the EIMS register
-        let mut mask: u32 = self.get_reg32(IXGBE_EIMS);
-        mask |= 1 << queue_id;
-        self.set_reg32(IXGBE_EIMS, mask);
-        debug!("Using MSIX interrupts");
     }
 
     /// Waits for the link to come up.
