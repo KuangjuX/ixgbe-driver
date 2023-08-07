@@ -410,7 +410,7 @@ impl<H: IxgbeHal, const QS: usize> IxgbeDevice<H, QS> {
         #[cfg(feature = "irq")]
         {
             interrupts.interrupts_enabled = true;
-            interrupts.itr_rate = 1; // 2us
+            interrupts.itr_rate = 0x028;
         }
 
         let mut dev = IxgbeDevice {
@@ -423,6 +423,14 @@ impl<H: IxgbeHal, const QS: usize> IxgbeDevice<H, QS> {
             interrupts,
             _marker: PhantomData,
         };
+
+        #[cfg(feature = "irq")]
+        {
+            for queue_id in 0..num_rx_queues {
+                dev.enable_msix_interrupt(queue_id);
+            }
+        }
+
         dev.reset_and_init(pool)?;
         Ok(dev)
     }
